@@ -326,7 +326,7 @@ def clean_data(df):
     for col in cat_cols:
         if df[col].dtype == object:
             try:
-                parsed = pd.to_datetime(df[col], infer_datetime_format=True)
+                parsed = pd.to_datetime(df[col])
                 if parsed.notna().mean() > 0.7:
                     df[col] = parsed
             except Exception:
