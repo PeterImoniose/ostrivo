@@ -18,6 +18,10 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - **Data Q&A** — ask natural language questions about your data
 - **Download cleaned data** — export the cleaned CSV
 - **PDF report export** — download a full report covering overview, quality scores, anomalies, recommendations, and the AI summary
+- **Excel export (Power BI-ready)** — multi-sheet workbook (cleaned data, stats, anomalies) that imports cleanly into Power BI via Get Data
+- **Auto-Pilot** — one-click full analysis: type an optional goal, get summary + recommendations + forecast in a single view
+- **Help assistant** — a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
+- **Admin console** — password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
 
 ---
 
@@ -34,6 +38,10 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - [x] Natural language Q&A about your data
 - [x] Download cleaned data
 - [x] PDF report export
+- [x] Power BI-ready Excel export
+- [x] Auto-Pilot one-click analysis
+- [x] Sidebar help assistant
+- [x] Password-gated admin console
 - [x] Custom UI styling
 
 ---
@@ -79,6 +87,17 @@ Ostrivo uses an AI language model API for AI-powered summaries and Q&A.
 
 ---
 
+## 🔐 Admin Console
+
+A password-gated view showing usage stats, an estimated AI API cost, and an activity log — no
+customer-uploaded data is ever stored or shown here.
+
+1. Set an `admin_password` secret: locally in `.streamlit/secrets.toml`, and on Streamlit Cloud
+   under your app's **Settings → Secrets**
+2. Visit `<your-app-url>/?admin=1` and enter the password
+
+---
+
 ## 📁 Supported File Types
 
 - `.csv` — comma-separated values
@@ -97,7 +116,8 @@ Ostrivo uses an AI language model API for AI-powered summaries and Q&A.
 | Visualisation | Plotly |
 | AI | Large Language Model API |
 | Statistics | SciPy |
-| Reporting | fpdf2 (PDF export) |
+| Reporting | fpdf2 (PDF export), xlsxwriter (Excel export) |
+| Activity logging | SQLite |
 
 ---
 
@@ -113,7 +133,6 @@ Upload any CSV or Excel → instant dashboard, anomaly detection, and AI summary
 - [ ] Multi-file comparison
 - [ ] Industry-specific templates (retail, healthcare, finance)
 - [ ] User accounts and saved dashboards
-- [ ] GitHub repo + Streamlit Cloud deployment (free hosting)
 - [ ] Portfolio website showcasing the project
 
 ---

@@ -5,4 +5,5 @@ __pycache__/
 .DS_Store
 ostrivo_report_*.pdf
 ostrivo_cleaned_*.csv
+ostrivo_*.xlsx
 ostrivo_admin.db

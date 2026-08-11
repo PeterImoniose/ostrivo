@@ -203,7 +203,7 @@ if st.query_params.get("admin") == "1":
 
     st.subheader("Events by Type")
     if stats['by_type']:
-        st.bar_chart(stats['by_type'])
+        st.bar_chart(stats['by_type'], key="chart_admin_events_by_type")
     else:
         st.caption("No activity logged yet.")
 
@@ -211,12 +211,12 @@ if st.query_params.get("admin") == "1":
     st.caption("Rough estimate from token counts — verify actual spend at console.anthropic.com.")
     st.metric("Estimated Total Cost", f"${cost['total_est_cost_usd']}")
     if cost['breakdown']:
-        st.dataframe(pd.DataFrame(cost['breakdown']), use_container_width=True)
+        st.dataframe(pd.DataFrame(cost['breakdown']), use_container_width=True, key="table_admin_cost_breakdown")
 
     st.subheader("Recent Activity Log")
     recent_events_df = get_recent_events(100)
     if not recent_events_df.empty:
-        st.dataframe(recent_events_df, use_container_width=True, height=300)
+        st.dataframe(recent_events_df, use_container_width=True, height=300, key="table_admin_recent_events")
     else:
         st.caption("No events logged yet.")
 
@@ -638,6 +638,17 @@ def generate_forecast(df, date_col, value_col, periods=30):
     return combined, meta
 
 
+def pick_forecast_metric(num_cols, col_labels, goal_text):
+    """Pick the numeric column whose label best matches the goal text, or the first column."""
+    if goal_text:
+        goal_lower = goal_text.lower()
+        for col in num_cols:
+            label_words = re.findall(r'\w+', col_labels.get(col, col).lower())
+            if any(word in goal_lower for word in label_words if len(word) > 2):
+                return col
+    return num_cols[0] if num_cols else None
+
+
 def humanize_column_name(col):
     """Fallback heuristic: turn a raw column name into a readable label without AI."""
     name = re.sub(r'[_\-]+', ' ', str(col)).strip()
@@ -871,8 +882,22 @@ def generate_pdf_report(filename, clean_report, quality_scores, anomaly_summary,
     return bytes(pdf.output())
 
 
-def get_ai_summary(df, clean_report, anomaly_summary, api_key):
-    """Call the AI model to generate a plain-English executive summary."""
+def generate_excel_report(display_df, stats_df, anom_df, col_labels):
+    """Build a multi-sheet Excel workbook (cleaned data, stats, anomalies) that imports
+    cleanly into Power BI via Get Data -> Excel Workbook."""
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        display_df.rename(columns=col_labels).to_excel(writer, sheet_name='Cleaned Data', index=False)
+        if stats_df is not None:
+            stats_df.rename(columns=col_labels).to_excel(writer, sheet_name='Descriptive Stats')
+        if anom_df is not None and not anom_df.empty:
+            anom_df.rename(columns=col_labels).to_excel(writer, sheet_name='Anomalies', index=False)
+    return buffer.getvalue()
+
+
+def get_ai_summary(df, clean_report, anomaly_summary, api_key, goal=None):
+    """Call the AI model to generate a plain-English executive summary.
+    If `goal` is given, the summary is steered toward that specific question/focus."""
     client = anthropic.Anthropic(api_key=api_key)
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -900,9 +925,11 @@ def get_ai_summary(df, clean_report, anomaly_summary, api_key):
             "std": round(float(col_data.std()), 2)
         }
 
+    goal_line = f"\nTHE USER'S SPECIFIC GOAL FOR THIS ANALYSIS: {goal}\nGive extra weight to this in your findings and recommendations.\n" if goal else ""
+
     prompt = f"""You are Ostrivo, an AI business intelligence assistant. A user has uploaded a dataset.
 Analyse the following data profile and provide a clear, concise executive summary.
-
+{goal_line}
 DATA PROFILE:
 {json.dumps(profile, indent=2)}
 
@@ -974,6 +1001,46 @@ If the answer cannot be determined from the available data, say so clearly."""
     return response.content[0].text
 
 
+OSTRIVO_HELP_CONTEXT = """
+Ostrivo is an AI-powered business intelligence web app. How it works:
+
+- Upload a CSV or Excel file (.csv, .xlsx, .xls) via the sidebar uploader (max 200MB).
+- The app auto-cleans the data: removes duplicate rows, fills missing values (median for numbers,
+  mode for categories), and parses date columns.
+- Tabs after upload: Auto-Pilot (one-click full analysis), Dashboard (charts), Anomalies (outlier
+  detection via Isolation Forest), Advisor (data quality scorecard + recommendations), Forecast
+  (trend projection for dated data), AI Summary (AI-written executive summary), Ask Your Data
+  (chat about your dataset), Raw Data (download cleaned CSV/Excel/PDF report).
+- AI features (summary, advisor, forecast narrative, chat) need an AI API key pasted into the
+  sidebar. Get a free key at console.anthropic.com — it's never stored, only sent directly to the
+  AI provider for that request.
+- Nothing uploaded is stored on the server; it exists only for that browser session.
+- Support contact: peterimoniose@live.com or +44 7425 406280.
+"""
+
+
+def get_help_answer(question, api_key):
+    """Answer a question about how to use Ostrivo (not about the user's specific data)."""
+    client = anthropic.Anthropic(api_key=api_key)
+    prompt = f"""You are the help assistant for Ostrivo, a business intelligence web app. Answer the
+user's question about HOW TO USE the app, using only the reference info below. If they ask about
+their specific uploaded data, tell them to use the "Ask Your Data" tab instead.
+
+REFERENCE INFO:
+{OSTRIVO_HELP_CONTEXT}
+
+USER QUESTION: {question}
+
+Answer in 2-4 concise, direct sentences."""
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=300,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    log_api_call("help_assistant", "claude-sonnet-4-6", response)
+    return response.content[0].text
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
@@ -1003,6 +1070,25 @@ with st.sidebar:
 5. Ask questions about your data
 6. Download the full report
     """)
+
+    st.divider()
+    st.markdown("### 🆘 Help Assistant")
+    help_question = st.text_input(
+        "Ask how to use Ostrivo", key="help_question_input",
+        placeholder="e.g. What file types are supported?"
+    )
+    if help_question and st.button("Ask", key="help_ask_btn"):
+        if not api_key:
+            st.caption("Add your AI API key above to use the help assistant.")
+        else:
+            with st.spinner("Thinking..."):
+                try:
+                    st.session_state['help_answer'] = get_help_answer(help_question, api_key)
+                except Exception as e:
+                    log_event("error", f"help_assistant: {e}")
+                    st.error(f"API error: {e}")
+    if 'help_answer' in st.session_state:
+        st.caption(st.session_state['help_answer'])
 
     st.divider()
     st.markdown("### 💬 Need help?")
@@ -1124,13 +1210,113 @@ with k5:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "📈 Forecast",
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "📈 Forecast",
     "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data"
 ])
 
-# ── Tab 1: Dashboard ──────────────────────────────────────────────────────────
+# ── Tab 1: Auto-Pilot ─────────────────────────────────────────────────────────
 with tab1:
+    st.markdown('<p class="section-title">Auto-Pilot — One-Click Full Analysis</p>', unsafe_allow_html=True)
+    st.caption("Tell it what you care about (optional), then run everything at once — "
+               "summary, recommendations, and a forecast if your data has dates.")
+
+    autopilot_goal = st.text_input(
+        "What do you want to know? (optional)",
+        key="autopilot_goal_input",
+        placeholder="e.g. Analyse regional sales trends and flag anything concerning"
+    )
+
+    if st.button("🚀 Run Auto-Pilot", key="autopilot_run_btn"):
+        log_event("autopilot_run")
+        with st.spinner("Running full analysis..."):
+            result = {'goal': autopilot_goal}
+
+            result['advisor_recs'] = get_advisor_recommendations(
+                df, clean_report, anomaly_summary, quality_scores, api_key
+            )
+
+            if api_key:
+                try:
+                    result['ai_summary'] = get_ai_summary(
+                        df, clean_report, anomaly_summary, api_key, goal=autopilot_goal or None
+                    )
+                except Exception as e:
+                    log_event("error", f"autopilot ai_summary: {e}")
+                    result['ai_summary'] = None
+            else:
+                result['ai_summary'] = None
+
+            autopilot_date_col = detect_date_column(df)
+            autopilot_num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not c.startswith('_')]
+            if autopilot_date_col and autopilot_num_cols:
+                metric = pick_forecast_metric(autopilot_num_cols, col_labels, autopilot_goal)
+                fc_df, fc_meta = generate_forecast(df, autopilot_date_col, metric, periods=30)
+                result['forecast'] = (metric, fc_df, fc_meta) if fc_df is not None else None
+            else:
+                result['forecast'] = None
+
+            st.session_state['autopilot_result'] = result
+
+    if 'autopilot_result' in st.session_state:
+        res = st.session_state['autopilot_result']
+
+        st.markdown('<p class="section-title">Overview</p>', unsafe_allow_html=True)
+        ap1, ap2, ap3 = st.columns(3)
+        ap1.metric("Completeness", f"{quality_scores['completeness']}%")
+        ap2.metric("Duplicate Rate", f"{quality_scores['duplicate_rate']}%")
+        ap3.metric("Anomaly Rate", f"{quality_scores['anomaly_rate']}%")
+
+        if res['ai_summary']:
+            st.markdown('<p class="section-title">Executive Summary</p>', unsafe_allow_html=True)
+            st.markdown(res['ai_summary'])
+        else:
+            st.info("Add your AI API key in the sidebar to include an executive summary here.")
+
+        st.markdown('<p class="section-title">Top Recommendations</p>', unsafe_allow_html=True)
+        severity_class_ap = {'High': 'rec-high', 'Medium': 'rec-medium', 'Low': 'rec-low'}
+        severity_icon_ap = {'High': '🔴', 'Medium': '🟡', 'Low': '🟢'}
+        for rec in res['advisor_recs'][:5]:
+            sev = rec.get('severity', 'Low')
+            st.markdown(f"""
+            <div class="rec-card {severity_class_ap.get(sev, 'rec-low')}">
+                <h4>{severity_icon_ap.get(sev, '🟢')} {rec.get('title', 'Finding')} — {rec.get('category', '')}</h4>
+                <p>{rec.get('recommendation', '')}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        if res['forecast']:
+            metric, fc_df, fc_meta = res['forecast']
+            st.markdown('<p class="section-title">Forecast</p>', unsafe_allow_html=True)
+            metric_label_ap = col_labels.get(metric, metric)
+            actual_ap = fc_df[fc_df['type'] == 'Actual']
+            future_ap = fc_df[fc_df['type'] == 'Forecast']
+            fig_ap = go.Figure()
+            fig_ap.add_trace(go.Scatter(x=future_ap[detect_date_column(df)], y=future_ap['upper'],
+                                         mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'))
+            fig_ap.add_trace(go.Scatter(x=future_ap[detect_date_column(df)], y=future_ap['lower'],
+                                         mode='lines', line=dict(width=0), fill='tonexty',
+                                         fillcolor='rgba(2,132,199,0.15)', name='Confidence range', hoverinfo='skip'))
+            fig_ap.add_trace(go.Scatter(x=actual_ap[detect_date_column(df)], y=actual_ap[metric],
+                                         mode='lines', name='Actual', line=dict(color='#0f172a', width=2)))
+            fig_ap.add_trace(go.Scatter(x=future_ap[detect_date_column(df)], y=future_ap[metric],
+                                         mode='lines', name='Forecast', line=dict(color='#0284c7', width=2, dash='dash')))
+            fig_ap.update_layout(
+                title=f"{metric_label_ap} Forecast — Next 30 Periods",
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(family='Inter', color='#374151'), title_font=dict(size=14, color='#0f172a'),
+                legend=dict(orientation='h', y=-0.25)
+            )
+            st.plotly_chart(fig_ap, use_container_width=True, key="chart_autopilot_forecast")
+            st.caption(f"{metric_label_ap} shows {'an' if fc_meta['direction'] == 'increasing' else 'a'} "
+                       f"{fc_meta['direction']} trend (~{abs(fc_meta['slope']):.2f} per period).")
+
+        st.caption("Want more detail? Explore the Dashboard, Anomalies, Advisor, Forecast, and AI Summary "
+                   "tabs individually.")
+
+
+# ── Tab 2: Dashboard ──────────────────────────────────────────────────────────
+with tab2:
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_clean = [c for c in num_cols if not c.startswith('_')]
     cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
@@ -1159,7 +1345,7 @@ with tab1:
                 title_font=dict(size=14, color='#0f172a'),
                 showlegend=False
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="chart_histogram")
 
         with col_b:
             fig2 = px.box(
@@ -1174,7 +1360,7 @@ with tab1:
                 font=dict(family='Inter', color='#374151'),
                 title_font=dict(size=14, color='#0f172a')
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, use_container_width=True, key="chart_boxplot")
 
         # Correlation heatmap
         if len(num_cols_clean) >= 2:
@@ -1194,7 +1380,7 @@ with tab1:
                 title_font=dict(size=14, color='#0f172a'),
                 height=500
             )
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, use_container_width=True, key="chart_corr_heatmap")
 
         # Scatter plot
         if len(num_cols_clean) >= 2:
@@ -1225,7 +1411,7 @@ with tab1:
                 font=dict(family='Inter', color='#374151'),
                 title_font=dict(size=14, color='#0f172a')
             )
-            st.plotly_chart(fig4, use_container_width=True)
+            st.plotly_chart(fig4, use_container_width=True, key="chart_scatter")
 
         # Categorical breakdown
         if cat_cols:
@@ -1248,17 +1434,17 @@ with tab1:
                 title_font=dict(size=14, color='#0f172a'),
                 showlegend=False
             )
-            st.plotly_chart(fig5, use_container_width=True)
+            st.plotly_chart(fig5, use_container_width=True, key="chart_category_breakdown")
 
         # Descriptive stats table
         st.markdown('<p class="section-title">Descriptive Statistics</p>', unsafe_allow_html=True)
         stats_df = compute_stats(df)
         if stats_df is not None:
-            st.dataframe(stats_df.rename(columns=col_labels), use_container_width=True)
+            st.dataframe(stats_df.rename(columns=col_labels), use_container_width=True, key="table_descriptive_stats")
 
 
 # ── Tab 2: Anomalies ──────────────────────────────────────────────────────────
-with tab2:
+with tab3:
     st.markdown('<p class="section-title">Anomaly Detection</p>', unsafe_allow_html=True)
 
     if not anomaly_summary:
@@ -1309,7 +1495,7 @@ with tab2:
                 font=dict(family='Inter', color='#374151'),
                 title_font=dict(size=14, color='#0f172a')
             )
-            st.plotly_chart(fig_a, use_container_width=True)
+            st.plotly_chart(fig_a, use_container_width=True, key="chart_anomaly_scatter")
 
             # Show anomalous rows
             if anom_count > 0:
@@ -1317,12 +1503,12 @@ with tab2:
                 anom_df = df[df['_anomaly'] == True].drop(
                     columns=[c for c in ['_anomaly', '_anomaly_score'] if c in df.columns]
                 )
-                st.dataframe(anom_df.head(50), use_container_width=True)
+                st.dataframe(anom_df.head(50), use_container_width=True, key="table_anomalous_rows")
                 st.caption(f"Showing up to 50 of {anom_count} anomalous rows.")
 
 
 # ── Tab 3: Advisor ────────────────────────────────────────────────────────────
-with tab3:
+with tab4:
     st.markdown('<p class="section-title">Data Health &amp; Recommendations</p>', unsafe_allow_html=True)
 
     q1, q2, q3 = st.columns(3)
@@ -1380,7 +1566,7 @@ with tab3:
 
 
 # ── Tab 4: Forecast ───────────────────────────────────────────────────────────
-with tab4:
+with tab5:
     st.markdown('<p class="section-title">Forecast</p>', unsafe_allow_html=True)
 
     date_col = detect_date_column(df)
@@ -1435,7 +1621,7 @@ with tab4:
                 title_font=dict(size=14, color='#0f172a'),
                 legend=dict(orientation='h', y=-0.25)
             )
-            st.plotly_chart(fig_fc, use_container_width=True)
+            st.plotly_chart(fig_fc, use_container_width=True, key="chart_forecast")
 
             st.markdown(f"""
             <div class="insight-box">
@@ -1451,7 +1637,7 @@ with tab4:
 
 
 # ── Tab 5: AI Summary ─────────────────────────────────────────────────────────
-with tab5:
+with tab6:
     st.markdown('<p class="section-title">AI-Powered Executive Summary</p>', unsafe_allow_html=True)
 
     if not api_key:
@@ -1476,7 +1662,7 @@ with tab5:
 
 
 # ── Tab 6: Chat ───────────────────────────────────────────────────────────────
-with tab6:
+with tab7:
     st.markdown('<p class="section-title">Ask Questions About Your Data</p>', unsafe_allow_html=True)
 
     if not api_key:
@@ -1520,12 +1706,12 @@ with tab6:
 
 
 # ── Tab 7: Raw Data ───────────────────────────────────────────────────────────
-with tab7:
+with tab8:
     st.markdown('<p class="section-title">Cleaned Dataset</p>', unsafe_allow_html=True)
     display_df = df.drop(columns=[c for c in ['_anomaly', '_anomaly_score'] if c in df.columns])
-    st.dataframe(display_df, use_container_width=True, height=500)
+    st.dataframe(display_df, use_container_width=True, height=500, key="table_cleaned_dataset")
 
-    dl1, dl2 = st.columns(2)
+    dl1, dl2, dl3 = st.columns(3)
 
     with dl1:
         csv_buffer = io.StringIO()
@@ -1555,6 +1741,23 @@ with tab7:
             mime="application/pdf"
         ):
             log_event("pdf_export")
+
+    with dl3:
+        excel_stats_df = compute_stats(df)
+        excel_anom_df = None
+        if '_anomaly' in df.columns:
+            excel_anom_df = df[df['_anomaly'] == True].drop(
+                columns=[c for c in ['_anomaly', '_anomaly_score'] if c in df.columns]
+            )
+        excel_bytes = generate_excel_report(display_df, excel_stats_df, excel_anom_df, col_labels)
+        if st.download_button(
+            label="⬇️ Download Excel (Power BI-ready)",
+            data=excel_bytes,
+            file_name=f"ostrivo_{uploaded_file.name.split('.')[0]}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ):
+            log_event("excel_export")
+        st.caption("Import via Power BI's Get Data → Excel Workbook, or Get Data → Text/CSV for the CSV export.")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
