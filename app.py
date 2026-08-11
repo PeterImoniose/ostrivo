@@ -12,8 +12,154 @@ from scipy import stats
 from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 from fpdf import FPDF
+import sqlite3
+import uuid
+from datetime import datetime, timezone
 import warnings
 warnings.filterwarnings('ignore')
+
+# ── Admin logging (SQLite) ───────────────────────────────────────────────────
+# Note: on Streamlit Community Cloud the filesystem is ephemeral, so this data
+# persists only while the app instance stays running, and resets on redeploy.
+# A production version should swap this for an external database.
+ADMIN_DB_PATH = "ostrivo_admin.db"
+
+
+def init_admin_db():
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            detail TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS api_calls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            model TEXT,
+            input_tokens INTEGER,
+            output_tokens INTEGER
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def get_session_id():
+    if 'session_id' not in st.session_state:
+        st.session_state['session_id'] = str(uuid.uuid4())[:8]
+    return st.session_state['session_id']
+
+
+def log_event(event_type, detail=""):
+    try:
+        conn = sqlite3.connect(ADMIN_DB_PATH)
+        conn.execute(
+            "INSERT INTO events (ts, session_id, event_type, detail) VALUES (?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), get_session_id(), event_type, str(detail)[:500])
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def log_api_call(kind, model, response=None):
+    try:
+        input_tokens = getattr(response.usage, 'input_tokens', None) if response else None
+        output_tokens = getattr(response.usage, 'output_tokens', None) if response else None
+        conn = sqlite3.connect(ADMIN_DB_PATH)
+        conn.execute(
+            "INSERT INTO api_calls (ts, session_id, kind, model, input_tokens, output_tokens) VALUES (?, ?, ?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), get_session_id(), kind, model, input_tokens, output_tokens)
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+def get_usage_stats():
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT event_type, COUNT(*) FROM events GROUP BY event_type")
+    by_type = dict(cur.fetchall())
+    cur.execute("SELECT COUNT(DISTINCT session_id) FROM events")
+    sessions = cur.fetchone()[0] or 0
+    cur.execute("SELECT COUNT(*) FROM events WHERE event_type = 'error'")
+    errors = cur.fetchone()[0] or 0
+    conn.close()
+    return {'by_type': by_type, 'sessions': sessions, 'errors': errors}
+
+
+def get_api_cost_estimate():
+    """Rough cost estimate from token counts. Verify actual pricing at anthropic.com/pricing
+    and real spend at console.anthropic.com — this is not authoritative billing data."""
+    default_price = {'input': 3.0, 'output': 15.0}  # USD per million tokens, update if pricing changes
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    cur = conn.cursor()
+    cur.execute("SELECT model, SUM(input_tokens), SUM(output_tokens), COUNT(*) FROM api_calls GROUP BY model")
+    rows = cur.fetchall()
+    conn.close()
+
+    breakdown = []
+    total_cost = 0.0
+    for model, in_tok, out_tok, count in rows:
+        in_tok, out_tok = in_tok or 0, out_tok or 0
+        price = default_price
+        cost = (in_tok / 1_000_000 * price['input']) + (out_tok / 1_000_000 * price['output'])
+        total_cost += cost
+        breakdown.append({
+            'model': model or 'unknown', 'calls': count,
+            'input_tokens': in_tok, 'output_tokens': out_tok,
+            'est_cost_usd': round(cost, 4)
+        })
+    return {'total_est_cost_usd': round(total_cost, 4), 'breakdown': breakdown}
+
+
+def get_recent_events(limit=100):
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    events_df = pd.read_sql_query(
+        "SELECT ts, session_id, event_type, detail FROM events ORDER BY id DESC LIMIT ?",
+        conn, params=(limit,)
+    )
+    conn.close()
+    return events_df
+
+
+def admin_chat_query(question, api_key):
+    """Answer an admin's natural-language question about aggregated app activity (no customer data)."""
+    context = {
+        'usage_stats': get_usage_stats(),
+        'api_cost_estimate': get_api_cost_estimate(),
+        'recent_events': get_recent_events(50).to_dict('records'),
+    }
+    client = anthropic.Anthropic(api_key=api_key)
+    prompt = f"""You are an operations assistant for Ostrivo, a business intelligence web app.
+Answer the admin's question using only this aggregated app-activity data (no customer data is included here).
+
+APP ACTIVITY DATA:
+{json.dumps(context, indent=2, default=str)}
+
+ADMIN QUESTION: {question}
+
+Provide a clear, direct answer in 2-5 sentences using the numbers available. If the data can't answer the question, say so."""
+    response = client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=400,
+        messages=[{"role": "user", "content": prompt}]
+    )
+    log_api_call("admin_chat", "claude-sonnet-4-6", response)
+    return response.content[0].text
+
+
+init_admin_db()
 
 # ── Page config ──────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -22,6 +168,70 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ── Admin console (hidden behind ?admin=1, password-gated) ──────────────────
+if st.query_params.get("admin") == "1":
+    st.title("🔐 Ostrivo Admin Console")
+    st.caption("Aggregated app activity only — no customer-uploaded data is stored or shown here.")
+
+    admin_password_input = st.text_input("Admin password", type="password", key="admin_password_input")
+
+    if not admin_password_input:
+        st.info("Enter the admin password to continue.")
+        st.stop()
+
+    try:
+        correct_password = st.secrets.get("admin_password")
+    except Exception:
+        correct_password = None
+
+    if not correct_password:
+        st.error("No admin password is configured. Set 'admin_password' in Streamlit secrets.")
+        st.stop()
+
+    if admin_password_input != correct_password:
+        st.error("Incorrect password.")
+        st.stop()
+
+    stats = get_usage_stats()
+    cost = get_api_cost_estimate()
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Distinct Sessions", stats['sessions'])
+    c2.metric("Total Events", sum(stats['by_type'].values()))
+    c3.metric("Errors Logged", stats['errors'])
+
+    st.subheader("Events by Type")
+    if stats['by_type']:
+        st.bar_chart(stats['by_type'])
+    else:
+        st.caption("No activity logged yet.")
+
+    st.subheader("Estimated AI API Cost")
+    st.caption("Rough estimate from token counts — verify actual spend at console.anthropic.com.")
+    st.metric("Estimated Total Cost", f"${cost['total_est_cost_usd']}")
+    if cost['breakdown']:
+        st.dataframe(pd.DataFrame(cost['breakdown']), use_container_width=True)
+
+    st.subheader("Recent Activity Log")
+    recent_events_df = get_recent_events(100)
+    if not recent_events_df.empty:
+        st.dataframe(recent_events_df, use_container_width=True, height=300)
+    else:
+        st.caption("No events logged yet.")
+
+    st.subheader("Ask the AI About This Activity")
+    admin_api_key = st.text_input("AI API key (for admin chat)", type="password", key="admin_api_key")
+    admin_question = st.text_input("Ask a question about app activity", key="admin_question_input")
+    if admin_question and admin_api_key and st.button("Ask", key="admin_ask_btn"):
+        with st.spinner("Thinking..."):
+            try:
+                admin_answer = admin_chat_query(admin_question, admin_api_key)
+                st.markdown(f"**Answer:** {admin_answer}")
+            except Exception as e:
+                st.error(f"API error: {e}")
+
+    st.stop()
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -464,11 +674,13 @@ Respond with ONLY a JSON object mapping each original column name to its display
             max_tokens=600,
             messages=[{"role": "user", "content": prompt}]
         )
+        log_api_call("column_labels", "claude-sonnet-4-6", response)
         text = response.content[0].text.strip()
         text = re.sub(r'^```(?:json)?|```$', '', text, flags=re.MULTILINE).strip()
         labels = json.loads(text)
         return {c: labels.get(c, fallback[c]) for c in cols}
-    except Exception:
+    except Exception as e:
+        log_event("error", f"get_column_labels: {e}")
         return fallback
 
 
@@ -580,13 +792,15 @@ Valid severity values: "High", "Medium", "Low". Valid category values: "Data Qua
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}]
         )
+        log_api_call("advisor", "claude-sonnet-4-6", response)
         text = response.content[0].text.strip()
         text = re.sub(r'^```(?:json)?|```$', '', text, flags=re.MULTILINE).strip()
         recs = json.loads(text)
         if isinstance(recs, list) and recs:
             return recs
         return get_heuristic_recommendations(clean_report, quality_scores)
-    except Exception:
+    except Exception as e:
+        log_event("error", f"get_advisor_recommendations: {e}")
         return get_heuristic_recommendations(clean_report, quality_scores)
 
 
@@ -710,6 +924,7 @@ Keep the total response under 350 words."""
         max_tokens=1000,
         messages=[{"role": "user", "content": prompt}]
     )
+    log_api_call("ai_summary", "claude-sonnet-4-6", response)
     return response.content[0].text
 
 
@@ -755,6 +970,7 @@ If the answer cannot be determined from the available data, say so clearly."""
         max_tokens=400,
         messages=[{"role": "user", "content": prompt}]
     )
+    log_api_call("chat_question", "claude-sonnet-4-6", response)
     return response.content[0].text
 
 
@@ -787,6 +1003,12 @@ with st.sidebar:
 5. Ask questions about your data
 6. Download the full report
     """)
+
+    st.divider()
+    st.markdown("### 💬 Need help?")
+    st.caption("Questions, feedback, or support — reach out directly:")
+    st.markdown("📧 [peterimoniose@live.com](mailto:peterimoniose@live.com)")
+    st.markdown("📞 [+44 7425 406280](tel:+447425406280)")
 
 
 # ── Main content ──────────────────────────────────────────────────────────────
@@ -833,7 +1055,12 @@ with st.spinner("Loading and cleaning your data..."):
         raw_df = load_data(uploaded_file)
         df, clean_report = clean_data(raw_df)
         df, anomaly_summary = detect_anomalies(df)
+        if st.session_state.get('logged_upload') != uploaded_file.name:
+            # Deliberately no filename or data content logged here — only anonymous shape/counts.
+            log_event("upload", f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols")
+            st.session_state['logged_upload'] = uploaded_file.name
     except Exception as e:
+        log_event("error", "upload failed")
         st.error(f"Error loading file: {e}")
         st.stop()
 
@@ -1241,6 +1468,7 @@ with tab5:
                     summary = get_ai_summary(df, clean_report, anomaly_summary, api_key)
                     st.session_state['ai_summary'] = summary
                 except Exception as e:
+                    log_event("error", f"get_ai_summary: {e}")
                     st.error(f"API error: {e}")
 
         if 'ai_summary' in st.session_state:
@@ -1302,12 +1530,13 @@ with tab7:
     with dl1:
         csv_buffer = io.StringIO()
         display_df.to_csv(csv_buffer, index=False)
-        st.download_button(
+        if st.download_button(
             label="⬇️ Download Cleaned Data (CSV)",
             data=csv_buffer.getvalue(),
             file_name=f"ostrivo_cleaned_{uploaded_file.name.split('.')[0]}.csv",
             mime="text/csv"
-        )
+        ):
+            log_event("csv_export")
 
     with dl2:
         pdf_advisor_recs = st.session_state.get('advisor_recs') or get_heuristic_recommendations(clean_report, quality_scores)
@@ -1319,12 +1548,13 @@ with tab7:
             advisor_recs=pdf_advisor_recs,
             ai_summary=st.session_state.get('ai_summary'),
         )
-        st.download_button(
+        if st.download_button(
             label="⬇️ Download Full Report (PDF)",
             data=pdf_bytes,
             file_name=f"ostrivo_report_{uploaded_file.name.split('.')[0]}.pdf",
             mime="application/pdf"
-        )
+        ):
+            log_event("pdf_export")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
