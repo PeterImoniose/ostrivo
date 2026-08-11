@@ -102,6 +102,21 @@ customer-uploaded data is ever stored or shown here.
 
 ---
 
+## 🧪 Testing
+
+Core data-processing logic (cleaning, anomaly detection, forecasting, quality scoring, PDF/Excel
+generation) lives in `ostrivo_core.py`, kept free of Streamlit and network dependencies so it can
+be unit tested directly:
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+CI runs these tests automatically on every push via GitHub Actions.
+
+---
+
 ## 📁 Supported File Types
 
 - `.csv` — comma-separated values
@@ -122,6 +137,7 @@ customer-uploaded data is ever stored or shown here.
 | Statistics | SciPy |
 | Reporting | fpdf2 (PDF export), xlsxwriter (Excel export) |
 | Activity logging | SQLite |
+| Testing | pytest, GitHub Actions CI |
 
 ---
 
