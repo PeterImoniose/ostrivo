@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+.DS_Store
+ostrivo_report_*.pdf
+ostrivo_cleaned_*.csv
