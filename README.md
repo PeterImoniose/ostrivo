@@ -1,8 +1,12 @@
 # 📊 Ostrivo
 
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app/)
+
 > Upload your data. Get instant AI-powered insights, dashboards, and anomaly detection.
 
 Ostrivo is an AI-powered business intelligence web app that transforms raw CSV and Excel files into interactive dashboards, anomaly detection reports, and plain-English executive summaries — in under 30 seconds.
+
+**Live demo:** [ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app](https://ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app/)
 
 ---
 
