@@ -26,7 +26,7 @@ def get_supabase_client(url, anon_key):
 def sign_up(client, email, password, industry=None, full_name=None):
     """Create a new (unconfirmed) account. `industry`/`full_name` (if given) are stored in
     the user's metadata - no separate profiles table needed. The account isn't usable until
-    the user clicks the confirmation link Supabase emails them."""
+    the emailed confirmation code is verified via verify_signup_code()."""
     data = {}
     if industry:
         data["industry"] = industry
@@ -36,6 +36,19 @@ def sign_up(client, email, password, industry=None, full_name=None):
     if data:
         payload["options"] = {"data": data}
     return client.auth.sign_up(payload)
+
+
+def verify_signup_code(client, email, code):
+    """Verify the 6-digit code emailed at signup. On success this both confirms the account
+    and logs the user in - Supabase returns an active session directly, no separate login step
+    needed. Requires the Supabase project's "Confirm signup" email template to include
+    {{ .Token }} (see README) - otherwise the emailed link won't contain a code to enter here."""
+    return client.auth.verify_otp({"email": email, "token": code, "type": "signup"})
+
+
+def resend_signup_code(client, email):
+    """Re-send the signup confirmation code to an email that hasn't verified yet."""
+    return client.auth.resend({"type": "signup", "email": email})
 
 
 def sign_in(client, email, password):

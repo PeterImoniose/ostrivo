@@ -125,16 +125,24 @@ Ostrivo works with no accounts at all by default. To turn on login + saved dashb
    SUPABASE_URL = "https://your-project.supabase.co"
    SUPABASE_ANON_KEY = "your-anon-key"
    ```
+5. Set up custom SMTP under **Authentication → Emails → SMTP Settings** with a real email
+   provider (e.g. [Brevo](https://www.brevo.com), free tier). Supabase's default built-in email
+   service caps out at 2 emails/hour project-wide and doesn't allow editing any email template -
+   both of which custom SMTP fixes.
+6. In the Supabase dashboard, go to **Authentication → Emails → Templates → Confirm signup** and
+   replace the body with:
+   ```html
+   <h2>Confirm your signup</h2>
+   <p>Enter this code in Ostrivo to activate your account:</p>
+   <h1 style="letter-spacing: 4px; font-size: 32px;">{{ .Token }}</h1>
+   <p>If you didn't try to create an account, you can safely ignore this email.</p>
+   ```
+
 Once set, the app requires an account. Signing up asks for a full name, email, and password
 (at least 8 characters with an uppercase letter, a lowercase letter, and a number, entered twice
-to confirm the match) - then a confirmation link emailed by Supabase before first login.
+to confirm the match) - then a 6-digit code emailed to confirm the account before first login.
 Saved analyses store the cleaned dataset and computed results (quality scores, anomalies, AI
 summary) - not the original uploaded file.
-
-Note: Supabase's built-in email service doesn't allow customising the confirmation email's
-wording or format (e.g. switching to a code-based flow) unless you configure custom SMTP with
-your own email provider - the default link-based confirmation works out of the box with no
-extra setup.
 
 ---
 
