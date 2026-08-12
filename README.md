@@ -6,7 +6,7 @@
 
 Ostrivo is an AI-powered business intelligence web app that transforms raw CSV and Excel files into interactive dashboards, anomaly detection reports, and plain-English executive summaries - in under 30 seconds.
 
-**Live demo:** [ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app](https://ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app/)
+**Live demo:** [ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app](https://ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app/) (also reachable at [ostrivo.app](https://ostrivo.app), which redirects here - Streamlit Community Cloud's free tier doesn't support custom domains natively, so `ostrivo.app` is a DNS-level forward, not the actual hosting URL)
 
 ---
 
@@ -104,7 +104,9 @@ customer-uploaded data is ever stored or shown here.
 
 1. Set an `admin_password` secret: locally in `.streamlit/secrets.toml`, and on Streamlit Cloud
    under your app's **Settings → Secrets**
-2. Visit `<your-app-url>/?admin=1` and enter the password
+2. Visit `<your-app-url>/?admin=1` and enter the password - use the actual
+   `ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app` URL for this, not `ostrivo.app`, since the
+   domain redirect strips query strings and would drop the `?admin=1`
 
 ---
 
