@@ -908,9 +908,11 @@ if supabase_client:
         login_tab, signup_tab = st.tabs(["🔑 Log In", "✨ Sign Up"])
 
         with login_tab:
-            login_email = st.text_input("Email", key="login_email")
-            login_password = st.text_input("Password", type="password", key="login_password")
-            if st.button("Log In", key="login_btn"):
+            with st.form("login_form"):
+                login_email = st.text_input("Email", key="login_email")
+                login_password = st.text_input("Password", type="password", key="login_password")
+                login_submitted = st.form_submit_button("Log In")
+            if login_submitted:
                 try:
                     result = sign_in(supabase_client, login_email, login_password)
                     st.session_state['auth_user'] = result.user
@@ -927,21 +929,21 @@ if supabase_client:
                     st.error(f"Login failed: {e}")
 
         with signup_tab:
-            signup_name = st.text_input("Full Name", key="signup_name")
-            signup_email = st.text_input("Email", key="signup_email")
-            signup_password = st.text_input(
-                "Password", type="password", key="signup_password",
-                help="At least 8 characters, with an uppercase letter, a lowercase letter, and a number."
-            )
-            signup_password_confirm = st.text_input(
-                "Re-enter Password", type="password", key="signup_password_confirm"
-            )
-            signup_industry = st.selectbox(
-                "Which industry best fits your work?", list(INDUSTRY_OPTIONS.keys()),
-                format_func=lambda k: INDUSTRY_OPTIONS[k], key="signup_industry",
-                help="Ostrivo tailors its analysis and recommendations to this. You can change it later."
-            )
-            if st.button("Create Account", key="signup_btn"):
+            with st.form("signup_form"):
+                signup_name = st.text_input("Full Name", key="signup_name")
+                signup_email = st.text_input("Email", key="signup_email")
+                signup_password = st.text_input("Password", type="password", key="signup_password")
+                st.caption("Must be at least 8 characters, with an uppercase letter, a lowercase letter, and a number.")
+                signup_password_confirm = st.text_input(
+                    "Re-enter Password", type="password", key="signup_password_confirm"
+                )
+                signup_industry = st.selectbox(
+                    "Which industry best fits your work?", list(INDUSTRY_OPTIONS.keys()),
+                    format_func=lambda k: INDUSTRY_OPTIONS[k], key="signup_industry",
+                    help="Ostrivo tailors its analysis and recommendations to this. You can change it later."
+                )
+                signup_submitted = st.form_submit_button("Create Account")
+            if signup_submitted:
                 is_valid, password_message = validate_password_strength(signup_password)
                 if not signup_name.strip():
                     st.error("Please enter your name.")
