@@ -19,6 +19,7 @@ from ostrivo_core import (
     get_data_quality_scores, get_heuristic_recommendations,
     generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet, rank_excel_sheets,
+    combine_dataframes,
 )
 warnings.filterwarnings('ignore')
 
@@ -791,10 +792,11 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 📂 Upload Data")
-    uploaded_file = st.file_uploader(
-        "CSV or Excel file",
+    uploaded_files = st.file_uploader(
+        "CSV or Excel file(s)",
         type=["csv", "xlsx", "xls"],
-        help="Max 200MB"
+        help="Max 200MB per file. Select multiple files (e.g. one per month) to analyse them together.",
+        accept_multiple_files=True
     )
 
     st.divider()
@@ -842,7 +844,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if uploaded_file is None:
+if not uploaded_files:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
@@ -869,70 +871,126 @@ if uploaded_file is None:
         </div>
         """, unsafe_allow_html=True)
 
-    st.info("👈 Upload a CSV or Excel file in the sidebar to get started.")
+    st.info("👈 Upload a CSV or Excel file in the sidebar to get started. Select multiple files to "
+            "analyse them together (e.g. one file per month).")
     st.stop()
+
+display_name = uploaded_files[0].name if len(uploaded_files) == 1 else f"{len(uploaded_files)}_files_combined"
 
 # ── Load and process data ─────────────────────────────────────────────────────
 try:
-    raw_df = None
+    named_dfs = []       # [(filename, df), ...]
+    sheet_choice_notes = []  # info about auto-picked sheets, multi-file mode only
 
-    if is_excel_file(uploaded_file.name):
-        sheets_cache_key = uploaded_file.name
-        if st.session_state.get('excel_sheets_cache_key') != sheets_cache_key:
-            sheet_names = get_excel_sheet_names(uploaded_file)
-            if len(sheet_names) > 1:
-                sheets = {name: load_excel_sheet(uploaded_file, name) for name in sheet_names}
-                st.session_state['excel_sheets'] = sheets
-                st.session_state['excel_sheet_ranking'] = rank_excel_sheets(sheets)
-            else:
-                st.session_state['excel_sheets'] = None
-            st.session_state['excel_sheets_cache_key'] = sheets_cache_key
-            st.session_state.pop('excel_sheet_ai_suggestion', None)
-
-        sheets = st.session_state.get('excel_sheets')
-
-        if sheets:
-            ranked = st.session_state['excel_sheet_ranking']
-            sheet_options = [name for name, score in ranked]
-
-            if api_key and 'excel_sheet_ai_suggestion' not in st.session_state:
-                with st.spinner("Working out which sheet has your data..."):
-                    st.session_state['excel_sheet_ai_suggestion'] = get_ai_sheet_recommendation(sheets, api_key)
-            ai_suggestion = st.session_state.get('excel_sheet_ai_suggestion')
-            default_sheet = ai_suggestion if ai_suggestion in sheet_options else sheet_options[0]
-
-            st.markdown('<p class="section-title">Multiple Sheets Detected</p>', unsafe_allow_html=True)
-            st.caption(f"This workbook has {len(sheet_options)} sheets. Ostrivo ranked them by how likely "
-                       f"each is to be the real data table (vs. notes, instructions, or a cover page).")
-            selected_sheet = st.selectbox(
-                "Which sheet should Ostrivo analyse?", sheet_options,
-                index=sheet_options.index(default_sheet)
-            )
-            if ai_suggestion:
-                if ai_suggestion == selected_sheet:
-                    st.caption(f"🤖 AI agrees: **{ai_suggestion}** looks like the data sheet.")
+    if len(uploaded_files) == 1:
+        f = uploaded_files[0]
+        if is_excel_file(f.name):
+            sheets_cache_key = f.name
+            if st.session_state.get('excel_sheets_cache_key') != sheets_cache_key:
+                sheet_names = get_excel_sheet_names(f)
+                if len(sheet_names) > 1:
+                    sheets = {name: load_excel_sheet(f, name) for name in sheet_names}
+                    st.session_state['excel_sheets'] = sheets
+                    st.session_state['excel_sheet_ranking'] = rank_excel_sheets(sheets)
                 else:
-                    st.caption(f"🤖 AI suggested **{ai_suggestion}**, but you've selected **{selected_sheet}**.")
-            raw_df = sheets[selected_sheet]
+                    st.session_state['excel_sheets'] = None
+                st.session_state['excel_sheets_cache_key'] = sheets_cache_key
+                st.session_state.pop('excel_sheet_ai_suggestion', None)
+
+            sheets = st.session_state.get('excel_sheets')
+
+            if sheets:
+                ranked = st.session_state['excel_sheet_ranking']
+                sheet_options = [name for name, score in ranked]
+
+                if api_key and 'excel_sheet_ai_suggestion' not in st.session_state:
+                    with st.spinner("Working out which sheet has your data..."):
+                        st.session_state['excel_sheet_ai_suggestion'] = get_ai_sheet_recommendation(sheets, api_key)
+                ai_suggestion = st.session_state.get('excel_sheet_ai_suggestion')
+                default_sheet = ai_suggestion if ai_suggestion in sheet_options else sheet_options[0]
+
+                st.markdown('<p class="section-title">Multiple Sheets Detected</p>', unsafe_allow_html=True)
+                st.caption(f"This workbook has {len(sheet_options)} sheets. Ostrivo ranked them by how likely "
+                           f"each is to be the real data table (vs. notes, instructions, or a cover page).")
+                selected_sheet = st.selectbox(
+                    "Which sheet should Ostrivo analyse?", sheet_options,
+                    index=sheet_options.index(default_sheet)
+                )
+                if ai_suggestion:
+                    if ai_suggestion == selected_sheet:
+                        st.caption(f"🤖 AI agrees: **{ai_suggestion}** looks like the data sheet.")
+                    else:
+                        st.caption(f"🤖 AI suggested **{ai_suggestion}**, but you've selected **{selected_sheet}**.")
+                named_dfs = [(f.name, sheets[selected_sheet])]
+            else:
+                named_dfs = [(f.name, load_data(f))]
         else:
-            raw_df = load_data(uploaded_file)
+            named_dfs = [(f.name, load_data(f))]
+
     else:
-        raw_df = load_data(uploaded_file)
+        # Multiple files: auto-pick the best sheet per file (no per-file manual picker,
+        # to keep the UI sane when there are many files) and combine them into one dataset.
+        with st.spinner(f"Reading {len(uploaded_files)} files..."):
+            for f in uploaded_files:
+                if is_excel_file(f.name):
+                    sheet_names = get_excel_sheet_names(f)
+                    if len(sheet_names) > 1:
+                        sheets = {name: load_excel_sheet(f, name) for name in sheet_names}
+                        ranked = rank_excel_sheets(sheets)
+                        best_sheet = ranked[0][0]
+                        if api_key:
+                            ai_pick = get_ai_sheet_recommendation(sheets, api_key)
+                            if ai_pick:
+                                best_sheet = ai_pick
+                        named_dfs.append((f.name, sheets[best_sheet]))
+                        sheet_choice_notes.append(f"{f.name}: used sheet '{best_sheet}'")
+                    else:
+                        named_dfs.append((f.name, load_data(f)))
+                else:
+                    named_dfs.append((f.name, load_data(f)))
+
+    if len(named_dfs) == 1:
+        raw_df = named_dfs[0][1]
+        combine_summary = None
+    else:
+        raw_df, combine_summary = combine_dataframes(named_dfs)
+
+    if combine_summary:
+        st.markdown('<p class="section-title">Multiple Files Combined</p>', unsafe_allow_html=True)
+        st.caption(f"Combined {combine_summary['files_combined']} files into "
+                   f"{combine_summary['total_rows']:,} rows total. A 'source_file' column was added "
+                   f"so you can filter or break down charts by file.")
+        if not combine_summary['columns_matched']:
+            st.markdown("""
+            <div class="warning-box">
+                <h4>⚠️ Columns don't fully match across files</h4>
+                <p>Some files have different columns. Missing values were left blank rather than
+                causing an error - check the Raw Data tab if anything looks off.</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with st.expander("Per-file details"):
+            for fname, count in combine_summary['file_row_counts'].items():
+                st.caption(f"- {fname}: {count:,} rows")
+            for note in sheet_choice_notes:
+                st.caption(f"- {note}")
 
     with st.spinner("Cleaning your data..."):
         df, clean_report = clean_data(raw_df)
         df, anomaly_summary = detect_anomalies(df)
-        if st.session_state.get('logged_upload') != uploaded_file.name:
+        if st.session_state.get('logged_upload') != display_name:
             # Deliberately no filename or data content logged here - only anonymous shape/counts.
-            log_event("upload", f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols")
-            st.session_state['logged_upload'] = uploaded_file.name
+            upload_detail = f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols"
+            if len(named_dfs) > 1:
+                upload_detail += f" ({len(named_dfs)} files)"
+            log_event("upload", upload_detail)
+            st.session_state['logged_upload'] = display_name
 except Exception as e:
     log_event("error", "upload failed")
-    st.error(f"Error loading file: {e}")
+    st.error(f"Error loading file(s): {e}")
     st.stop()
 
 # ── Column labels ────────────────────────────────────────────────────────────
-labels_cache_key = f"{uploaded_file.name}_{len(df.columns)}_{bool(api_key)}"
+labels_cache_key = f"{display_name}_{len(df.columns)}_{bool(api_key)}"
 if st.session_state.get('col_labels_cache_key') != labels_cache_key:
     with st.spinner("Labelling columns..."):
         st.session_state['col_labels'] = get_column_labels(df, api_key)
@@ -1003,12 +1061,12 @@ with st.expander("✏️ Rename columns"):
                 st.text_input(
                     f"`{col}`",
                     value=col_labels.get(col, col),
-                    key=f"rename_{uploaded_file.name}_{col}"
+                    key=f"rename_{display_name}_{col}"
                 )
 
 for _rc in df.columns:
     if not str(_rc).startswith('_'):
-        _override = st.session_state.get(f"rename_{uploaded_file.name}_{_rc}", "").strip()
+        _override = st.session_state.get(f"rename_{display_name}_{_rc}", "").strip()
         if _override:
             col_labels[_rc] = _override
 
@@ -1524,7 +1582,7 @@ with tab8:
         if st.download_button(
             label="⬇️ Download Cleaned Data (CSV)",
             data=csv_buffer.getvalue(),
-            file_name=f"ostrivo_cleaned_{uploaded_file.name.split('.')[0]}.csv",
+            file_name=f"ostrivo_cleaned_{display_name.split('.')[0]}.csv",
             mime="text/csv"
         ):
             log_event("csv_export")
@@ -1532,7 +1590,7 @@ with tab8:
     with dl2:
         pdf_advisor_recs = st.session_state.get('advisor_recs') or get_heuristic_recommendations(clean_report, quality_scores)
         pdf_bytes = generate_pdf_report(
-            filename=uploaded_file.name,
+            filename=display_name,
             clean_report=clean_report,
             quality_scores=quality_scores,
             anomaly_summary=anomaly_summary,
@@ -1542,7 +1600,7 @@ with tab8:
         if st.download_button(
             label="⬇️ Download Full Report (PDF)",
             data=pdf_bytes,
-            file_name=f"ostrivo_report_{uploaded_file.name.split('.')[0]}.pdf",
+            file_name=f"ostrivo_report_{display_name.split('.')[0]}.pdf",
             mime="application/pdf"
         ):
             log_event("pdf_export")
@@ -1558,7 +1616,7 @@ with tab8:
         if st.download_button(
             label="⬇️ Download Excel (Power BI-ready)",
             data=excel_bytes,
-            file_name=f"ostrivo_{uploaded_file.name.split('.')[0]}.xlsx",
+            file_name=f"ostrivo_{display_name.split('.')[0]}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         ):
             log_event("excel_export")

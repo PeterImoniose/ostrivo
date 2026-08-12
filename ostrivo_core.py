@@ -11,6 +11,37 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 
+def combine_dataframes(named_dfs):
+    """Combine multiple (filename, DataFrame) pairs into one DataFrame for analysing together
+    (e.g. one file per month). Adds a 'source_file' column and uses an outer-join concat so
+    files with slightly different columns don't error out - missing values become NaN.
+    Returns (combined_df, summary) where summary reports per-file row counts and whether the
+    column sets matched across all files."""
+    if not named_dfs:
+        raise ValueError("No files to combine")
+
+    all_columns = [frozenset(df.columns) for _, df in named_dfs]
+    columns_matched = len(set(all_columns)) == 1
+
+    parts = []
+    file_row_counts = {}
+    for name, df in named_dfs:
+        part = df.copy()
+        part['source_file'] = name
+        parts.append(part)
+        file_row_counts[name] = len(df)
+
+    combined = pd.concat(parts, ignore_index=True, sort=False)
+
+    summary = {
+        'files_combined': len(named_dfs),
+        'file_row_counts': file_row_counts,
+        'columns_matched': columns_matched,
+        'total_rows': len(combined),
+    }
+    return combined, summary
+
+
 def load_data(uploaded_file):
     """Load CSV or Excel file into DataFrame. For multi-sheet Excel files, loads the first sheet only -
     use get_excel_sheet_names/load_excel_sheet for sheet-aware loading."""

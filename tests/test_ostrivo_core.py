@@ -16,7 +16,7 @@ from ostrivo_core import (
     get_data_quality_scores, get_heuristic_recommendations,
     _pdf_safe, generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet,
-    score_sheet_as_data, rank_excel_sheets,
+    score_sheet_as_data, rank_excel_sheets, combine_dataframes,
 )
 
 
@@ -127,6 +127,47 @@ def test_rank_excel_sheets_puts_data_sheet_first():
     sheets = {name: load_excel_sheet(f, name) for name in get_excel_sheet_names(f)}
     ranked = rank_excel_sheets(sheets)
     assert ranked[0][0] == 'Sales Data'
+
+
+# ── combine_dataframes (multi-file analysis) ─────────────────────────────────
+
+def test_combine_dataframes_matching_columns():
+    jan = pd.DataFrame({"region": ["North", "South"], "revenue": [100, 150]})
+    feb = pd.DataFrame({"region": ["North", "South"], "revenue": [110, 160]})
+    combined, summary = combine_dataframes([("jan.csv", jan), ("feb.csv", feb)])
+
+    assert len(combined) == 4
+    assert summary['files_combined'] == 2
+    assert summary['total_rows'] == 4
+    assert summary['columns_matched'] is True
+    assert summary['file_row_counts'] == {"jan.csv": 2, "feb.csv": 2}
+    assert 'source_file' in combined.columns
+    assert set(combined['source_file']) == {"jan.csv", "feb.csv"}
+
+
+def test_combine_dataframes_mismatched_columns_outer_joins():
+    jan = pd.DataFrame({"region": ["North"], "revenue": [100]})
+    feb = pd.DataFrame({"region": ["South"], "revenue": [150], "cost": [70]})
+    combined, summary = combine_dataframes([("jan.csv", jan), ("feb.csv", feb)])
+
+    assert summary['columns_matched'] is False
+    assert len(combined) == 2
+    assert 'cost' in combined.columns
+    # jan's row has no cost value -> NaN, not an error
+    assert combined.loc[combined['source_file'] == 'jan.csv', 'cost'].isna().all()
+
+
+def test_combine_dataframes_single_file():
+    jan = pd.DataFrame({"region": ["North"], "revenue": [100]})
+    combined, summary = combine_dataframes([("jan.csv", jan)])
+    assert len(combined) == 1
+    assert summary['files_combined'] == 1
+    assert summary['columns_matched'] is True
+
+
+def test_combine_dataframes_empty_list_raises():
+    with pytest.raises(ValueError):
+        combine_dataframes([])
 
 
 # ── clean_data ─────────────────────────────────────────────────────────────────

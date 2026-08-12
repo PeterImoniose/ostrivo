@@ -15,6 +15,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - **Auto data cleaning** - removes duplicates, fills missing values, parses dates
 - **Smart column labelling** - AI-inferred human-readable labels for cryptic column names (falls back to a heuristic without an API key), with manual override so you can rename any column yourself
 - **Multi-sheet Excel support** - detects workbooks with multiple sheets, ranks them by how likely each is to be real tabular data (vs. notes/instructions/cover pages), and lets you pick which to analyse - with an optional AI opinion when a key is provided
+- **Multi-file analysis** - upload several files at once (e.g. one CSV per month) and Ostrivo combines them into a single dataset, adding a `source_file` column so you can break down charts by file. Handles files with slightly different columns without erroring out.
 - **Interactive dashboards** - histograms, box plots, scatter plots, correlation heatmaps, category breakdowns
 - **Anomaly detection** - Isolation Forest flags unusual rows automatically
 - **Advisor dashboard** - data quality scorecard plus severity-ranked recommendation cards
@@ -32,7 +33,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 
 ## ✅ MVP Status
 
-- [x] File upload (CSV + Excel, including multi-sheet workbooks)
+- [x] File upload (CSV + Excel, including multi-sheet workbooks and multiple files combined)
 - [x] Auto data cleaning (duplicates, missing values, date parsing)
 - [x] AI-powered smart column labelling with manual rename override
 - [x] 5 interactive chart types (histogram, box plot, scatter, heatmap, bar)
