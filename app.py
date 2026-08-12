@@ -60,6 +60,45 @@ def get_current_industry():
         return (st.session_state['auth_user'].user_metadata or {}).get('industry')
     return st.session_state.get('guest_industry')
 
+
+def render_verify_screen(pending_email):
+    """Show the enter-your-code screen for a pending signup and handle verify/resend/cancel.
+    Called both directly after a successful signup (same script run, no rerun needed - avoids
+    relying on a rerun round-trip to pick the state back up) and on later reruns for as long as
+    pending_signup_email stays in session_state (e.g. after a page reload)."""
+    st.subheader("Verify your email")
+    st.write(f"We sent a code to **{pending_email}**. Enter it below to activate your account.")
+    verify_code = st.text_input("Verification code", key="verify_code")
+    vc1, vc2 = st.columns(2)
+    with vc1:
+        if st.button("Verify & Log In", key="verify_code_btn"):
+            try:
+                result = verify_signup_code(supabase_client, pending_email, verify_code)
+                st.session_state['auth_user'] = result.user
+                st.session_state['sb_access_token'] = result.session.access_token
+                st.session_state['sb_refresh_token'] = result.session.refresh_token
+                cookie_controller.set('ostrivo_access_token', result.session.access_token)
+                cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
+                st.session_state.pop('pending_signup_email', None)
+                # The cookie component needs a render cycle to flush the write to the
+                # browser before we tear down the DOM with rerun() - an immediate rerun
+                # can cut it off, so give it a brief moment first.
+                time.sleep(0.5)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Verification failed: {e}")
+    with vc2:
+        if st.button("Resend code", key="resend_code_btn"):
+            try:
+                resend_signup_code(supabase_client, pending_email)
+                st.success("Code resent - check your email.")
+            except Exception as e:
+                st.error(f"Couldn't resend: {e}")
+    if st.button("Use a different email", key="cancel_signup_btn"):
+        st.session_state.pop('pending_signup_email', None)
+        st.rerun()
+    st.stop()
+
 # ── Admin logging (SQLite) ───────────────────────────────────────────────────
 # Note: on Streamlit Community Cloud the filesystem is ephemeral, so this data
 # persists only while the app instance stays running, and resets on redeploy.
@@ -906,39 +945,7 @@ if supabase_client:
         """, unsafe_allow_html=True)
 
         if 'pending_signup_email' in st.session_state:
-            pending_email = st.session_state['pending_signup_email']
-            st.subheader("Verify your email")
-            st.write(f"We sent a code to **{pending_email}**. Enter it below to activate your account.")
-            verify_code = st.text_input("Verification code", key="verify_code")
-            vc1, vc2 = st.columns(2)
-            with vc1:
-                if st.button("Verify & Log In", key="verify_code_btn"):
-                    try:
-                        result = verify_signup_code(supabase_client, pending_email, verify_code)
-                        st.session_state['auth_user'] = result.user
-                        st.session_state['sb_access_token'] = result.session.access_token
-                        st.session_state['sb_refresh_token'] = result.session.refresh_token
-                        cookie_controller.set('ostrivo_access_token', result.session.access_token)
-                        cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
-                        st.session_state.pop('pending_signup_email', None)
-                        # The cookie component needs a render cycle to flush the write to the
-                        # browser before we tear down the DOM with rerun() - an immediate rerun
-                        # can cut it off, so give it a brief moment first.
-                        time.sleep(0.5)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Verification failed: {e}")
-            with vc2:
-                if st.button("Resend code", key="resend_code_btn"):
-                    try:
-                        resend_signup_code(supabase_client, pending_email)
-                        st.success("Code resent - check your email.")
-                    except Exception as e:
-                        st.error(f"Couldn't resend: {e}")
-            if st.button("Use a different email", key="cancel_signup_btn"):
-                st.session_state.pop('pending_signup_email', None)
-                st.rerun()
-            st.stop()
+            render_verify_screen(st.session_state['pending_signup_email'])
 
         login_tab, signup_tab = st.tabs(["🔑 Log In", "✨ Sign Up"])
 
@@ -993,7 +1000,7 @@ if supabase_client:
                             industry=signup_industry, full_name=signup_name.strip()
                         )
                         st.session_state['pending_signup_email'] = signup_email
-                        st.rerun()
+                        render_verify_screen(signup_email)
                     except Exception as e:
                         st.error(f"Sign up failed: {e}")
 
