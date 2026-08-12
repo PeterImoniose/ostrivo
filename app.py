@@ -245,7 +245,7 @@ if st.query_params.get("admin") == "1":
 
     st.subheader("Events by Type")
     if stats['by_type']:
-        st.bar_chart(stats['by_type'], key="chart_admin_events_by_type")
+        st.bar_chart(stats['by_type'])
     else:
         st.caption("No activity logged yet.")
 
