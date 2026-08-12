@@ -78,6 +78,10 @@ def init_admin_db():
             detail TEXT
         )
     """)
+    try:
+        conn.execute("ALTER TABLE events ADD COLUMN industry TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists from a prior run
     conn.execute("""
         CREATE TABLE IF NOT EXISTS api_calls (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,12 +103,17 @@ def get_session_id():
     return st.session_state['session_id']
 
 
-def log_event(event_type, detail=""):
+def log_event(event_type, detail="", industry=None):
+    if industry is None:
+        try:
+            industry = get_current_industry()
+        except NameError:
+            industry = None  # called before the industry helpers are defined (e.g. admin gate)
     try:
         conn = sqlite3.connect(ADMIN_DB_PATH)
         conn.execute(
-            "INSERT INTO events (ts, session_id, event_type, detail) VALUES (?, ?, ?, ?)",
-            (datetime.now(timezone.utc).isoformat(), get_session_id(), event_type, str(detail)[:500])
+            "INSERT INTO events (ts, session_id, event_type, detail, industry) VALUES (?, ?, ?, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), get_session_id(), event_type, str(detail)[:500], industry)
         )
         conn.commit()
         conn.close()
@@ -136,8 +145,21 @@ def get_usage_stats():
     sessions = cur.fetchone()[0] or 0
     cur.execute("SELECT COUNT(*) FROM events WHERE event_type = 'error'")
     errors = cur.fetchone()[0] or 0
+    cur.execute("SELECT industry, COUNT(*) FROM events WHERE industry IS NOT NULL GROUP BY industry")
+    by_industry = dict(cur.fetchall())
     conn.close()
-    return {'by_type': by_type, 'sessions': sessions, 'errors': errors}
+    return {'by_type': by_type, 'sessions': sessions, 'errors': errors, 'by_industry': by_industry}
+
+
+def get_activity_over_time():
+    """Daily event counts and distinct-session counts, for a traffic-over-time view."""
+    conn = sqlite3.connect(ADMIN_DB_PATH)
+    activity_df = pd.read_sql_query("""
+        SELECT date(ts) AS day, COUNT(*) AS events, COUNT(DISTINCT session_id) AS sessions
+        FROM events GROUP BY day ORDER BY day
+    """, conn)
+    conn.close()
+    return activity_df
 
 
 def get_api_cost_estimate():
@@ -168,7 +190,7 @@ def get_api_cost_estimate():
 def get_recent_events(limit=100):
     conn = sqlite3.connect(ADMIN_DB_PATH)
     events_df = pd.read_sql_query(
-        "SELECT ts, session_id, event_type, detail FROM events ORDER BY id DESC LIMIT ?",
+        "SELECT ts, session_id, event_type, detail, industry FROM events ORDER BY id DESC LIMIT ?",
         conn, params=(limit,)
     )
     conn.close()
@@ -179,6 +201,7 @@ def admin_chat_query(question, api_key):
     """Answer an admin's natural-language question about aggregated app activity (no customer data)."""
     context = {
         'usage_stats': get_usage_stats(),
+        'activity_over_time': get_activity_over_time().to_dict('records'),
         'api_cost_estimate': get_api_cost_estimate(),
         'recent_events': get_recent_events(50).to_dict('records'),
     }
@@ -216,24 +239,26 @@ if st.query_params.get("admin") == "1":
     st.title("🔐 Ostrivo Admin Console")
     st.caption("Aggregated app activity only - no customer-uploaded data is stored or shown here.")
 
-    admin_password_input = st.text_input("Admin password", type="password", key="admin_password_input")
+    if not st.session_state.get('admin_authenticated'):
+        admin_password_input = st.text_input("Admin password", type="password", key="admin_password_input")
+        if st.button("Login", key="admin_login_btn"):
+            try:
+                correct_password = st.secrets.get("admin_password")
+            except Exception:
+                correct_password = None
 
-    if not admin_password_input:
-        st.info("Enter the admin password to continue.")
+            if not correct_password:
+                st.error("No admin password is configured. Set 'admin_password' in Streamlit secrets.")
+            elif admin_password_input != correct_password:
+                st.error("Incorrect password.")
+            else:
+                st.session_state['admin_authenticated'] = True
+                st.rerun()
         st.stop()
 
-    try:
-        correct_password = st.secrets.get("admin_password")
-    except Exception:
-        correct_password = None
-
-    if not correct_password:
-        st.error("No admin password is configured. Set 'admin_password' in Streamlit secrets.")
-        st.stop()
-
-    if admin_password_input != correct_password:
-        st.error("Incorrect password.")
-        st.stop()
+    if st.button("Log Out", key="admin_logout_btn"):
+        st.session_state.pop('admin_authenticated', None)
+        st.rerun()
 
     stats = get_usage_stats()
     cost = get_api_cost_estimate()
@@ -243,11 +268,26 @@ if st.query_params.get("admin") == "1":
     c2.metric("Total Events", sum(stats['by_type'].values()))
     c3.metric("Errors Logged", stats['errors'])
 
+    st.subheader("Traffic Over Time")
+    activity_df = get_activity_over_time()
+    if not activity_df.empty:
+        st.line_chart(activity_df.set_index('day')[['events', 'sessions']])
+    else:
+        st.caption("No activity logged yet.")
+
     st.subheader("Events by Type")
     if stats['by_type']:
         st.bar_chart(stats['by_type'])
     else:
         st.caption("No activity logged yet.")
+
+    st.subheader("Industry Breakdown")
+    st.caption("Which industries the activity above is coming from (based on each user's industry setting).")
+    if stats['by_industry']:
+        industry_labels = {INDUSTRY_OPTIONS.get(k, k): v for k, v in stats['by_industry'].items()}
+        st.bar_chart(industry_labels)
+    else:
+        st.caption("No industry-tagged activity yet.")
 
     st.subheader("Estimated AI API Cost")
     st.caption("Rough estimate from token counts - verify actual spend at console.anthropic.com.")
