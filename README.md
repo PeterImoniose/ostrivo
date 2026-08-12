@@ -127,24 +127,25 @@ Ostrivo works with no accounts at all by default. To turn on login + saved dashb
    ```
 Once set, the app requires an account. Signing up asks for a full name, email, and password
 (at least 8 characters with an uppercase letter, a lowercase letter, and a number, entered twice
-to confirm the match) - then a confirmation link emailed by Supabase before first login.
+to confirm the match). After signup, the account is inactive until a verification code emailed
+by Supabase is entered in the app - verifying it both confirms the account and logs the user in.
 Saved analyses store the cleaned dataset and computed results (quality scores, anomalies, AI
 summary) - not the original uploaded file.
 
-### Switching to a code-based confirmation (needs a custom domain)
+### Email delivery (custom SMTP)
 
-By default, Supabase's built-in email service sends a confirmation *link* and caps out at
-2 emails/hour project-wide - fine for testing, but real signups will hit that limit fast.
-A code-based confirmation (enter a 6-digit code instead of clicking a link) is also possible,
-but requires custom SMTP with a real email provider, and every major provider (Brevo, Resend,
-SendGrid, etc.) requires verifying a domain you own before they'll send to real recipients -
-sending to your own inbox during setup/testing works without one, but production sending to
-actual users doesn't. If/when you have a domain for Ostrivo:
+Supabase's built-in email service caps out at 2 emails/hour project-wide and doesn't allow
+editing any email template - both blockers for real signups. Ostrivo uses custom SMTP through
+[Brevo](https://www.brevo.com) (free tier) instead, which requires a verified domain (Brevo
+won't send to real recipients otherwise - true of every major provider, not Brevo-specific):
 
-1. Set up custom SMTP under **Authentication → Emails → SMTP Settings** with a provider
-   (e.g. [Brevo](https://www.brevo.com), free tier), verify your domain there, and wait for
-   their transactional-sending approval (Brevo: 1-2 business days)
-2. In the Supabase dashboard, go to **Authentication → Emails → Templates → Confirm signup**
+1. Own a domain and verify it in Brevo (Senders, Domains & Dedicated IPs → Domains → Add a
+   domain), adding the DNS records Brevo provides (a TXT ownership record, DKIM CNAMEs, and
+   optionally a DMARC record and a branded-link subdomain)
+2. Set up custom SMTP under Supabase's **Authentication → Emails → SMTP Settings**:
+   host `smtp-relay.brevo.com`, port `587`, the SMTP login/key from Brevo's SMTP & API page,
+   and a sender email at your verified domain (e.g. `no-reply@yourdomain.com`)
+3. In the Supabase dashboard, go to **Authentication → Emails → Templates → Confirm signup**
    and replace the body with:
    ```html
    <h2>Confirm your signup</h2>
@@ -152,9 +153,8 @@ actual users doesn't. If/when you have a domain for Ostrivo:
    <h1 style="letter-spacing: 4px; font-size: 32px;">{{ .Token }}</h1>
    <p>If you didn't try to create an account, you can safely ignore this email.</p>
    ```
-3. Restore `verify_signup_code`/`resend_signup_code` in `supabase_backend.py` and the
-   enter-your-code screen in `app.py`'s signup flow (see git history for the exact code -
-   it's been added and reverted twice already while this was being sorted out)
+   Note: Supabase's generated code isn't always exactly 6 digits (Ostrivo's own project has seen
+   8-digit codes) - don't assume a fixed length anywhere in the UI or validation.
 
 ---
 
