@@ -103,7 +103,7 @@ def get_usage_stats():
 
 def get_api_cost_estimate():
     """Rough cost estimate from token counts. Verify actual pricing at anthropic.com/pricing
-    and real spend at console.anthropic.com — this is not authoritative billing data."""
+    and real spend at console.anthropic.com - this is not authoritative billing data."""
     default_price = {'input': 3.0, 'output': 15.0}  # USD per million tokens, update if pricing changes
     conn = sqlite3.connect(ADMIN_DB_PATH)
     cur = conn.cursor()
@@ -175,7 +175,7 @@ st.set_page_config(
 # ── Admin console (hidden behind ?admin=1, password-gated) ──────────────────
 if st.query_params.get("admin") == "1":
     st.title("🔐 Ostrivo Admin Console")
-    st.caption("Aggregated app activity only — no customer-uploaded data is stored or shown here.")
+    st.caption("Aggregated app activity only - no customer-uploaded data is stored or shown here.")
 
     admin_password_input = st.text_input("Admin password", type="password", key="admin_password_input")
 
@@ -211,7 +211,7 @@ if st.query_params.get("admin") == "1":
         st.caption("No activity logged yet.")
 
     st.subheader("Estimated AI API Cost")
-    st.caption("Rough estimate from token counts — verify actual spend at console.anthropic.com.")
+    st.caption("Rough estimate from token counts - verify actual spend at console.anthropic.com.")
     st.metric("Estimated Total Cost", f"${cost['total_est_cost_usd']}")
     if cost['breakdown']:
         st.dataframe(pd.DataFrame(cost['breakdown']), use_container_width=True, key="table_admin_cost_breakdown")
@@ -714,7 +714,7 @@ Ostrivo is an AI-powered business intelligence web app. How it works:
   (trend projection for dated data), AI Summary (AI-written executive summary), Ask Your Data
   (chat about your dataset), Raw Data (download cleaned CSV/Excel/PDF report).
 - AI features (summary, advisor, forecast narrative, chat) need an AI API key pasted into the
-  sidebar. Get a free key at console.anthropic.com — it's never stored, only sent directly to the
+  sidebar. Get a free key at console.anthropic.com - it's never stored, only sent directly to the
   AI provider for that request.
 - Nothing uploaded is stored on the server; it exists only for that browser session.
 - Support contact: peterimoniose@live.com or +44 7425 406280.
@@ -794,7 +794,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 💬 Need help?")
-    st.caption("Questions, feedback, or support — reach out directly:")
+    st.caption("Questions, feedback, or support - reach out directly:")
     st.markdown("📧 [peterimoniose@live.com](mailto:peterimoniose@live.com)")
     st.markdown("📞 [+44 7425 406280](tel:+447425406280)")
 
@@ -844,7 +844,7 @@ with st.spinner("Loading and cleaning your data..."):
         df, clean_report = clean_data(raw_df)
         df, anomaly_summary = detect_anomalies(df)
         if st.session_state.get('logged_upload') != uploaded_file.name:
-            # Deliberately no filename or data content logged here — only anonymous shape/counts.
+            # Deliberately no filename or data content logged here - only anonymous shape/counts.
             log_event("upload", f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols")
             st.session_state['logged_upload'] = uploaded_file.name
     except Exception as e:
@@ -919,8 +919,8 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
 
 # ── Tab 1: Auto-Pilot ─────────────────────────────────────────────────────────
 with tab1:
-    st.markdown('<p class="section-title">Auto-Pilot — One-Click Full Analysis</p>', unsafe_allow_html=True)
-    st.caption("Tell it what you care about (optional), then run everything at once — "
+    st.markdown('<p class="section-title">Auto-Pilot - One-Click Full Analysis</p>', unsafe_allow_html=True)
+    st.caption("Tell it what you care about (optional), then run everything at once - "
                "summary, recommendations, and a forecast if your data has dates.")
 
     autopilot_goal = st.text_input(
@@ -982,7 +982,7 @@ with tab1:
             sev = rec.get('severity', 'Low')
             st.markdown(f"""
             <div class="rec-card {severity_class_ap.get(sev, 'rec-low')}">
-                <h4>{severity_icon_ap.get(sev, '🟢')} {rec.get('title', 'Finding')} — {rec.get('category', '')}</h4>
+                <h4>{severity_icon_ap.get(sev, '🟢')} {rec.get('title', 'Finding')} - {rec.get('category', '')}</h4>
                 <p>{rec.get('recommendation', '')}</p>
             </div>
             """, unsafe_allow_html=True)
@@ -1004,7 +1004,7 @@ with tab1:
             fig_ap.add_trace(go.Scatter(x=future_ap[detect_date_column(df)], y=future_ap[metric],
                                          mode='lines', name='Forecast', line=dict(color='#0284c7', width=2, dash='dash')))
             fig_ap.update_layout(
-                title=f"{metric_label_ap} Forecast — Next 30 Periods",
+                title=f"{metric_label_ap} Forecast - Next 30 Periods",
                 plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                 legend=dict(orientation='h', y=-0.25)
@@ -1052,7 +1052,7 @@ with tab2:
         with col_b:
             fig2 = px.box(
                 df, y=col_select,
-                title=f"Box Plot — {col_labels.get(col_select, col_select)}",
+                title=f"Box Plot - {col_labels.get(col_select, col_select)}",
                 labels=col_labels,
                 color_discrete_sequence=["#0f4c81"]
             )
@@ -1124,7 +1124,7 @@ with tab2:
             vc.columns = [cat_sel, 'Count']
             fig5 = px.bar(
                 vc, x=cat_sel, y='Count',
-                title=f"Top values — {col_labels.get(cat_sel, cat_sel)}",
+                title=f"Top values - {col_labels.get(cat_sel, cat_sel)}",
                 labels=col_labels,
                 color='Count',
                 color_continuous_scale='Blues'
@@ -1261,7 +1261,7 @@ with tab4:
             icon = severity_icon.get(sev, '🟢')
             st.markdown(f"""
             <div class="rec-card {css_class}">
-                <h4>{icon} {rec.get('title', 'Finding')} — {rec.get('category', '')}</h4>
+                <h4>{icon} {rec.get('title', 'Finding')} - {rec.get('category', '')}</h4>
                 <p>{rec.get('recommendation', '')}</p>
             </div>
             """, unsafe_allow_html=True)
@@ -1316,7 +1316,7 @@ with tab5:
                 name='Forecast', line=dict(color='#0284c7', width=2, dash='dash')
             ))
             fig_fc.update_layout(
-                title=f"{metric_label} Forecast — Next {periods} Periods",
+                title=f"{metric_label} Forecast - Next {periods} Periods",
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(family='Inter', color='#94a3b8'),
@@ -1334,7 +1334,7 @@ with tab5:
             </div>
             """, unsafe_allow_html=True)
 
-            st.caption("This is a simple trend + day-of-week seasonality projection, not a guarantee — "
+            st.caption("This is a simple trend + day-of-week seasonality projection, not a guarantee - "
                        "treat it as a directional estimate, not a precise prediction.")
 
 
@@ -1464,7 +1464,7 @@ with tab8:
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="footer-note">
-    Ostrivo — AI-Powered Business Intelligence &nbsp;·&nbsp;
+    Ostrivo - AI-Powered Business Intelligence &nbsp;·&nbsp;
     Upload your data, unlock your insights
 </div>
 """, unsafe_allow_html=True)

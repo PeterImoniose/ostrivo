@@ -1,4 +1,4 @@
-"""Unit tests for ostrivo_core.py — the Streamlit-independent data processing logic."""
+"""Unit tests for ostrivo_core.py - the Streamlit-independent data processing logic."""
 
 import io
 import sys

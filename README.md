@@ -4,7 +4,7 @@
 
 > Upload your data. Get instant AI-powered insights, dashboards, and anomaly detection.
 
-Ostrivo is an AI-powered business intelligence web app that transforms raw CSV and Excel files into interactive dashboards, anomaly detection reports, and plain-English executive summaries — in under 30 seconds.
+Ostrivo is an AI-powered business intelligence web app that transforms raw CSV and Excel files into interactive dashboards, anomaly detection reports, and plain-English executive summaries - in under 30 seconds.
 
 **Live demo:** [ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app](https://ostrivo-jdcstzn86pqn3chnhbjzf6.streamlit.app/)
 
@@ -12,20 +12,20 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 
 ## ✨ Features
 
-- **Auto data cleaning** — removes duplicates, fills missing values, parses dates
-- **Smart column labelling** — AI-inferred human-readable labels for cryptic column names (falls back to a heuristic without an API key)
-- **Interactive dashboards** — histograms, box plots, scatter plots, correlation heatmaps, category breakdowns
-- **Anomaly detection** — Isolation Forest flags unusual rows automatically
-- **Advisor dashboard** — data quality scorecard plus severity-ranked recommendation cards
-- **Forecasting** — trend + seasonality projection for datasets with a date column
-- **AI executive summary** — automatically generates a plain-English business summary
-- **Data Q&A** — ask natural language questions about your data
-- **Download cleaned data** — export the cleaned CSV
-- **PDF report export** — download a full report covering overview, quality scores, anomalies, recommendations, and the AI summary
-- **Excel export (Power BI-ready)** — multi-sheet workbook (cleaned data, stats, anomalies) that imports cleanly into Power BI via Get Data
-- **Auto-Pilot** — one-click full analysis: type an optional goal, get summary + recommendations + forecast in a single view
-- **Help assistant** — a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
-- **Admin console** — password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
+- **Auto data cleaning** - removes duplicates, fills missing values, parses dates
+- **Smart column labelling** - AI-inferred human-readable labels for cryptic column names (falls back to a heuristic without an API key)
+- **Interactive dashboards** - histograms, box plots, scatter plots, correlation heatmaps, category breakdowns
+- **Anomaly detection** - Isolation Forest flags unusual rows automatically
+- **Advisor dashboard** - data quality scorecard plus severity-ranked recommendation cards
+- **Forecasting** - trend + seasonality projection for datasets with a date column
+- **AI executive summary** - automatically generates a plain-English business summary
+- **Data Q&A** - ask natural language questions about your data
+- **Download cleaned data** - export the cleaned CSV
+- **PDF report export** - download a full report covering overview, quality scores, anomalies, recommendations, and the AI summary
+- **Excel export (Power BI-ready)** - multi-sheet workbook (cleaned data, stats, anomalies) that imports cleanly into Power BI via Get Data
+- **Auto-Pilot** - one-click full analysis: type an optional goal, get summary + recommendations + forecast in a single view
+- **Help assistant** - a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
+- **Admin console** - password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
 
 ---
 
@@ -74,7 +74,7 @@ streamlit run app.py
 The app opens automatically at `http://localhost:8501`
 
 ### 5. Try it
-Upload any CSV or Excel file — even a simple sales spreadsheet or bank export — and you'll see:
+Upload any CSV or Excel file - even a simple sales spreadsheet or bank export - and you'll see:
 - Auto-cleaning stats (duplicates removed, missing values filled)
 - Interactive charts and a correlation heatmap
 - Anomaly detection results
@@ -93,7 +93,7 @@ Ostrivo uses an AI language model API for AI-powered summaries and Q&A.
 
 ## 🔐 Admin Console
 
-A password-gated view showing usage stats, an estimated AI API cost, and an activity log — no
+A password-gated view showing usage stats, an estimated AI API cost, and an activity log - no
 customer-uploaded data is ever stored or shown here.
 
 1. Set an `admin_password` secret: locally in `.streamlit/secrets.toml`, and on Streamlit Cloud
@@ -119,9 +119,9 @@ CI runs these tests automatically on every push via GitHub Actions.
 
 ## 📁 Supported File Types
 
-- `.csv` — comma-separated values
-- `.xlsx` — Excel (modern format)
-- `.xls` — Excel (legacy format)
+- `.csv` - comma-separated values
+- `.xlsx` - Excel (modern format)
+- `.xls` - Excel (legacy format)
 
 ---
 
@@ -162,7 +162,7 @@ Upload any CSV or Excel → instant dashboard, anomaly detection, and AI summary
 ## 👤 Author
 
 **Avwerosuo Peter Imoniose**  
-MSc Applied Data Science in Engineering (Distinction) — Glasgow Caledonian University, 2026  
+MSc Applied Data Science in Engineering (Distinction) - Glasgow Caledonian University, 2026  
 [LinkedIn](https://www.linkedin.com/in/avwerosuo-imoniose-bbb3b915a) · [GitHub](https://github.com/PeterImoniose)
 
 ---
