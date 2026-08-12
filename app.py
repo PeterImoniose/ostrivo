@@ -911,6 +911,30 @@ with k5:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# ── Manual column renaming ───────────────────────────────────────────────────
+with st.expander("✏️ Rename columns"):
+    st.caption("Override any auto-generated label below. Clear a field to go back to the default.")
+    rename_cols = [c for c in df.columns if not str(c).startswith('_')]
+    n_per_row = 3
+    for i in range(0, len(rename_cols), n_per_row):
+        row_cols = rename_cols[i:i + n_per_row]
+        ui_cols = st.columns(n_per_row)
+        for ui_col, col in zip(ui_cols, row_cols):
+            with ui_col:
+                st.text_input(
+                    f"`{col}`",
+                    value=col_labels.get(col, col),
+                    key=f"rename_{uploaded_file.name}_{col}"
+                )
+
+for _rc in df.columns:
+    if not str(_rc).startswith('_'):
+        _override = st.session_state.get(f"rename_{uploaded_file.name}_{_rc}", "").strip()
+        if _override:
+            col_labels[_rc] = _override
+
+st.markdown("<br>", unsafe_allow_html=True)
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "📈 Forecast",
@@ -1176,10 +1200,10 @@ with tab3:
 
         if num_cols_clean and '_anomaly' in df.columns:
             # Anomaly scatter
-            col_x = st.selectbox("X axis for anomaly view", num_cols_clean, index=0, key='ax',
+            col_x = st.selectbox("X axis for anomaly view", num_cols_clean, index=0,
                                   format_func=lambda c: col_labels.get(c, c))
             col_y = st.selectbox("Y axis for anomaly view", num_cols_clean,
-                                  index=min(1, len(num_cols_clean)-1), key='ay',
+                                  index=min(1, len(num_cols_clean)-1),
                                   format_func=lambda c: col_labels.get(c, c))
 
             anomaly_scatter_labels = {**col_labels, '_anomaly': 'Anomaly'}
