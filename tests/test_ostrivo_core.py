@@ -17,6 +17,8 @@ from ostrivo_core import (
     _pdf_safe, generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet,
     score_sheet_as_data, rank_excel_sheets, combine_dataframes, json_safe,
+    suggest_category_and_metric_columns, top_performers_analysis,
+    concentration_risk_analysis, control_chart_analysis,
 )
 
 
@@ -423,3 +425,131 @@ def test_generate_excel_report_with_anomalies_sheet():
     anom_df = display_df[display_df['revenue'] > 1000]
     excel_bytes = generate_excel_report(display_df, None, anom_df, col_labels={})
     assert excel_bytes.startswith(b'PK')
+
+
+# ── suggest_category_and_metric_columns ──────────────────────────────────────
+
+def test_suggest_category_and_metric_columns_typical():
+    df = pd.DataFrame({
+        "region": ["North", "South", "East", "West"] * 3,
+        "revenue": range(12),
+    })
+    cat, num = suggest_category_and_metric_columns(df)
+    assert cat == "region"
+    assert num == "revenue"
+
+
+def test_suggest_category_and_metric_columns_no_categorical():
+    df = pd.DataFrame({"revenue": range(5)})
+    cat, num = suggest_category_and_metric_columns(df)
+    assert cat is None
+    assert num == "revenue"
+
+
+def test_suggest_category_and_metric_columns_no_numeric():
+    df = pd.DataFrame({"region": ["North", "South"]})
+    cat, num = suggest_category_and_metric_columns(df)
+    assert cat == "region"
+    assert num is None
+
+
+# ── top_performers_analysis (Sales & Retail) ─────────────────────────────────
+
+def test_top_performers_analysis_ranks_correctly():
+    df = pd.DataFrame({
+        "product": ["A", "A", "B", "B", "C"],
+        "revenue": [100, 100, 50, 50, 10],
+    })
+    result = top_performers_analysis(df, "product", "revenue")
+    assert list(result["product"]) == ["A", "B", "C"]
+    assert list(result["total"]) == [200, 100, 10]
+    assert result["share_pct"].sum() == pytest.approx(100.0, abs=0.1)
+
+
+def test_top_performers_analysis_respects_top_n():
+    df = pd.DataFrame({
+        "product": ["A", "B", "C", "D"],
+        "revenue": [40, 30, 20, 10],
+    })
+    result = top_performers_analysis(df, "product", "revenue", top_n=2)
+    assert len(result) == 2
+    assert list(result["product"]) == ["A", "B"]
+
+
+def test_top_performers_analysis_missing_column_raises():
+    df = pd.DataFrame({"product": ["A"], "revenue": [1]})
+    with pytest.raises(ValueError):
+        top_performers_analysis(df, "product", "nonexistent")
+
+
+# ── concentration_risk_analysis (Finance & Banking) ──────────────────────────
+
+def test_concentration_risk_fully_concentrated_is_high():
+    df = pd.DataFrame({
+        "account": ["A", "B", "C"],
+        "balance": [1000, 0, 0],
+    })
+    result = concentration_risk_analysis(df, "account", "balance")
+    assert result["hhi"] == pytest.approx(1.0)
+    assert result["risk_level"] == "High"
+    assert result["top_category"] == "A"
+    assert result["top_category_share_pct"] == pytest.approx(100.0)
+
+
+def test_concentration_risk_evenly_spread_is_low():
+    df = pd.DataFrame({
+        "account": [f"acct_{i}" for i in range(10)],
+        "balance": [100] * 10,
+    })
+    result = concentration_risk_analysis(df, "account", "balance")
+    assert result["hhi"] == pytest.approx(0.1)
+    assert result["risk_level"] == "Low"
+
+
+def test_concentration_risk_breakdown_shares_sum_to_one():
+    df = pd.DataFrame({"account": ["A", "B", "C"], "balance": [500, 300, 200]})
+    result = concentration_risk_analysis(df, "account", "balance")
+    assert result["breakdown"]["share"].sum() == pytest.approx(1.0)
+
+
+def test_concentration_risk_missing_column_raises():
+    df = pd.DataFrame({"account": ["A"], "balance": [1]})
+    with pytest.raises(ValueError):
+        concentration_risk_analysis(df, "account", "nonexistent")
+
+
+# ── control_chart_analysis (Engineering & Manufacturing) ─────────────────────
+
+def test_control_chart_flags_clear_outlier():
+    # A realistic-sized sample: with too few points, one extreme outlier can inflate
+    # mean +/- 3*std enough to widen the limits and mask itself - a known limitation of
+    # small-sample control charts generally, not specific to this implementation. Real
+    # SPC practice uses a reasonably sized baseline for exactly this reason.
+    df = pd.DataFrame({"measurement": [10.0] * 20 + [50.0]})
+    result = control_chart_analysis(df, "measurement")
+    assert result["out_of_control_count"] == 1
+    outlier_row = result["points"][result["points"]["measurement"] == 50.0]
+    assert outlier_row["in_control"].iloc[0] == False  # noqa: E712
+    normal_row = result["points"][result["points"]["measurement"] == 10.0].iloc[0]
+    assert normal_row["in_control"] == True  # noqa: E712
+
+
+def test_control_chart_no_outliers_in_tight_data():
+    df = pd.DataFrame({"measurement": [10.0, 10.1, 9.9, 10.0, 9.95, 10.05]})
+    result = control_chart_analysis(df, "measurement")
+    assert result["out_of_control_count"] == 0
+
+
+def test_control_chart_sorts_by_sequence_col():
+    df = pd.DataFrame({
+        "measurement": [3, 1, 2],
+        "run_order": [3, 1, 2],
+    })
+    result = control_chart_analysis(df, "measurement", sequence_col="run_order")
+    assert list(result["points"]["measurement"]) == [1, 2, 3]
+
+
+def test_control_chart_missing_column_raises():
+    df = pd.DataFrame({"measurement": [1, 2, 3]})
+    with pytest.raises(ValueError):
+        control_chart_analysis(df, "nonexistent")

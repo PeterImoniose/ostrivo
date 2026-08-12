@@ -29,6 +29,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - **Help assistant** - a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
 - **Admin console** - password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
 - **User accounts** (optional, requires Supabase setup) - sign up / log in, save an analysis, and reload it later from "My Dashboards." Each user's saved analyses are private, enforced by Postgres Row Level Security, not just app-level checks. Session persists across page reloads via a cookie. If Supabase isn't configured, Ostrivo runs exactly as before, no login required.
+- **Industry-specific analysis** - pick your industry once (Sales & Retail, Finance & Banking, or Engineering & Manufacturing) and Ostrivo tailors both the AI narrative and a dedicated "Industry Insights" tab to it: Top Performers ranking for Sales & Retail, a Concentration Risk (HHI) breakdown for Finance & Banking, and a Process Control Chart (SPC/X-chart) for Engineering & Manufacturing. Change your industry anytime from the sidebar.
 
 ---
 
@@ -50,6 +51,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - [x] Sidebar help assistant
 - [x] Password-gated admin console
 - [x] Optional user accounts with RLS-enforced private saved dashboards
+- [x] Industry-specific analysis (Sales & Retail, Finance & Banking, Engineering & Manufacturing)
 - [x] Custom UI styling
 
 ---
@@ -129,6 +131,22 @@ Once set, the app requires login. Saved analyses store the cleaned dataset and c
 
 ---
 
+## 🏭 Industry-Specific Analysis
+
+Once logged in, pick your industry from the signup form (or change it anytime from the sidebar).
+Ostrivo stores the choice in your account's Supabase user metadata - no extra table needed - and
+uses it to tailor both the AI-generated wording and a dedicated **Industry Insights** tab:
+
+| Industry | Industry Insights tab shows |
+|---|---|
+| Sales & Retail Business | Top Performers - ranks a category (product, region, etc.) by a chosen metric |
+| Finance & Banking | Concentration Risk - Herfindahl-Hirschman Index (HHI) and risk level across a category/amount breakdown |
+| Engineering & Manufacturing | Process Control Chart - standard SPC (X-chart) with center line, control limits, and out-of-control points |
+
+Guest/no-login mode still works with no industry set, showing the original general-purpose analysis.
+
+---
+
 ## 🧪 Testing
 
 Core data-processing logic (cleaning, anomaly detection, forecasting, quality scoring, PDF/Excel
@@ -181,8 +199,7 @@ Upload any CSV or Excel → instant dashboard, anomaly detection, and AI summary
 
 - [ ] Email alerts for anomalies
 - [ ] Multi-file comparison
-- [ ] Industry-specific templates (retail, healthcare, finance)
-- [ ] User accounts and saved dashboards
+- [ ] More industries (healthcare, logistics, etc.)
 - [ ] Portfolio website showcasing the project
 
 ---

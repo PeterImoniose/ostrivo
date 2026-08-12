@@ -421,3 +421,115 @@ def generate_excel_report(display_df, stats_df, anom_df, col_labels):
         if anom_df is not None and not anom_df.empty:
             anom_df.rename(columns=col_labels).to_excel(writer, sheet_name='Anomalies', index=False)
     return buffer.getvalue()
+
+
+# ── Industry-specific analysis ────────────────────────────────────────────────
+
+INDUSTRY_OPTIONS = {
+    'sales_retail': 'Sales & Retail Business',
+    'finance_banking': 'Finance & Banking',
+    'engineering_manufacturing': 'Engineering & Manufacturing',
+}
+
+
+def suggest_category_and_metric_columns(df):
+    """Suggest a default categorical column and numeric column for an industry analysis -
+    e.g. the categorical column with a reasonable number of unique values, and the first
+    numeric column. Returns (category_col, metric_col), either of which may be None."""
+    cat_cols = [c for c in df.select_dtypes(include=['object', 'category']).columns if not str(c).startswith('_')]
+    num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not str(c).startswith('_')]
+
+    best_cat = None
+    for c in cat_cols:
+        nunique = df[c].nunique()
+        if 2 <= nunique <= 50:
+            best_cat = c
+            break
+    if best_cat is None and cat_cols:
+        best_cat = cat_cols[0]
+
+    best_num = num_cols[0] if num_cols else None
+    return best_cat, best_num
+
+
+def top_performers_analysis(df, category_col, metric_col, top_n=10):
+    """Sales & Retail: rank a category (product, region, ...) by the total of a numeric metric
+    (revenue, units sold, ...). Returns a DataFrame [category_col, 'total', 'share_pct']."""
+    if category_col not in df.columns or metric_col not in df.columns:
+        raise ValueError("category_col and metric_col must both exist in the DataFrame")
+
+    grouped = df.groupby(category_col)[metric_col].sum().reset_index()
+    grouped.columns = [category_col, 'total']
+    grouped = grouped.sort_values('total', ascending=False)
+
+    total_sum = grouped['total'].sum()
+    grouped['share_pct'] = round(grouped['total'] / total_sum * 100, 1) if total_sum else 0.0
+
+    return grouped.head(top_n).reset_index(drop=True)
+
+
+def concentration_risk_analysis(df, category_col, amount_col):
+    """Finance & Banking: Herfindahl-Hirschman Index of amount_col concentrated across
+    category_col - a standard portfolio/risk concentration measure (0-1 scale; <0.15 = low,
+    0.15-0.25 = moderate, >0.25 = high concentration risk). Returns a dict with the HHI, a
+    risk level label, the top category's share, and a per-category breakdown DataFrame."""
+    if category_col not in df.columns or amount_col not in df.columns:
+        raise ValueError("category_col and amount_col must both exist in the DataFrame")
+
+    grouped = df.groupby(category_col)[amount_col].sum().reset_index()
+    grouped.columns = [category_col, 'total']
+    total_sum = grouped['total'].sum()
+    grouped['share'] = grouped['total'] / total_sum if total_sum else 0.0
+
+    hhi = float((grouped['share'] ** 2).sum())
+    if hhi < 0.15:
+        risk_level = 'Low'
+    elif hhi < 0.25:
+        risk_level = 'Moderate'
+    else:
+        risk_level = 'High'
+
+    grouped = grouped.sort_values('total', ascending=False).reset_index(drop=True)
+    top_share_pct = round(float(grouped['share'].iloc[0]) * 100, 1) if len(grouped) else 0.0
+
+    return {
+        'hhi': round(hhi, 4),
+        'risk_level': risk_level,
+        'top_category': grouped[category_col].iloc[0] if len(grouped) else None,
+        'top_category_share_pct': top_share_pct,
+        'breakdown': grouped,
+    }
+
+
+def control_chart_analysis(df, metric_col, sequence_col=None):
+    """Engineering & Manufacturing: a statistical process control (individuals/X) chart for
+    metric_col - center line (mean), upper/lower control limits (mean +/- 3 std), and which
+    points fall outside those limits. If sequence_col is given (e.g. a date or index column),
+    points are sorted by it first. Returns a dict with the control limits and a DataFrame of
+    points with an 'in_control' flag."""
+    if metric_col not in df.columns:
+        raise ValueError("metric_col must exist in the DataFrame")
+
+    cols = [metric_col] + ([sequence_col] if sequence_col and sequence_col in df.columns else [])
+    data = df[cols].dropna().reset_index(drop=True)
+    if sequence_col and sequence_col in data.columns:
+        data = data.sort_values(sequence_col).reset_index(drop=True)
+
+    mean = float(data[metric_col].mean()) if len(data) else 0.0
+    std = float(data[metric_col].std()) if len(data) > 1 else 0.0
+    ucl = mean + 3 * std
+    lcl = mean - 3 * std
+
+    data = data.copy()
+    data['in_control'] = data[metric_col].between(lcl, ucl)
+    out_of_control_count = int((~data['in_control']).sum())
+
+    return {
+        'mean': round(mean, 4),
+        'std': round(std, 4),
+        'ucl': round(ucl, 4),
+        'lcl': round(lcl, 4),
+        'out_of_control_count': out_of_control_count,
+        'out_of_control_pct': round(out_of_control_count / len(data) * 100, 1) if len(data) else 0.0,
+        'points': data,
+    }

@@ -23,12 +23,22 @@ def get_supabase_client(url, anon_key):
     return create_client(url, anon_key)
 
 
-def sign_up(client, email, password):
-    return client.auth.sign_up({"email": email, "password": password})
+def sign_up(client, email, password, industry=None):
+    """Create a new account. `industry` (if given) is stored in the user's metadata -
+    no separate profiles table needed."""
+    payload = {"email": email, "password": password}
+    if industry:
+        payload["options"] = {"data": {"industry": industry}}
+    return client.auth.sign_up(payload)
 
 
 def sign_in(client, email, password):
     return client.auth.sign_in_with_password({"email": email, "password": password})
+
+
+def update_industry(client, industry):
+    """Update the logged-in user's industry preference in their account metadata."""
+    return client.auth.update_user({"data": {"industry": industry}})
 
 
 def sign_out(client):

@@ -21,13 +21,43 @@ from ostrivo_core import (
     generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet, rank_excel_sheets,
     combine_dataframes,
+    INDUSTRY_OPTIONS, suggest_category_and_metric_columns,
+    top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
 )
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
     save_analysis, list_saved_analyses, load_analysis, delete_analysis,
+    update_industry,
 )
 from streamlit_cookies_controller import CookieController
 warnings.filterwarnings('ignore')
+
+# ── Industry-specific AI framing ─────────────────────────────────────────────
+INDUSTRY_AI_CONTEXT = {
+    'sales_retail': (
+        "The user runs a sales/retail business. Frame findings around revenue, top-selling "
+        "products or categories, regional performance, and customer/demand trends. "
+        "Recommendations should be commercially actionable (pricing, inventory, promotion)."
+    ),
+    'finance_banking': (
+        "The user works in finance/banking. Frame findings around risk exposure, concentration "
+        "risk, portfolio diversification, and transaction/balance patterns. Treat anomalies as "
+        "potential fraud or compliance signals worth reviewing, not just statistical outliers."
+    ),
+    'engineering_manufacturing': (
+        "The user works in engineering/manufacturing. Frame findings around process stability, "
+        "defect or failure rates, tolerances, and control limits. Treat anomalies as potential "
+        "process control violations worth investigating, not just statistical outliers."
+    ),
+}
+
+
+def get_current_industry():
+    """Return the currently active industry key (from the logged-in user's account metadata,
+    or the session-only guest fallback when Supabase isn't configured), or None if unset."""
+    if supabase_client and 'auth_user' in st.session_state:
+        return (st.session_state['auth_user'].user_metadata or {}).get('industry')
+    return st.session_state.get('guest_industry')
 
 # ── Admin logging (SQLite) ───────────────────────────────────────────────────
 # Note: on Streamlit Community Cloud the filesystem is ephemeral, so this data
@@ -581,9 +611,10 @@ Respond with ONLY a JSON object mapping each original column name to its display
         return fallback
 
 
-def get_advisor_recommendations(df, clean_report, anomaly_summary, quality_scores, api_key):
+def get_advisor_recommendations(df, clean_report, anomaly_summary, quality_scores, api_key, industry=None):
     """Return a list of {title, severity, category, recommendation} findings.
-    Uses the AI model when a key is available, otherwise falls back to rule-based checks."""
+    Uses the AI model when a key is available, otherwise falls back to rule-based checks.
+    If `industry` is given, the AI-generated findings are framed using that industry's context."""
     if not api_key:
         return get_heuristic_recommendations(clean_report, quality_scores)
 
@@ -608,8 +639,10 @@ def get_advisor_recommendations(df, clean_report, anomaly_summary, quality_score
             "stats": stats_dict,
         }
 
-        prompt = f"""You are a business data advisor. Review this dataset profile and identify 3-6 specific, actionable findings a business owner should know about.
+        industry_line = f"\n{INDUSTRY_AI_CONTEXT[industry]}\n" if industry in INDUSTRY_AI_CONTEXT else ""
 
+        prompt = f"""You are a business data advisor. Review this dataset profile and identify 3-6 specific, actionable findings a business owner should know about.
+{industry_line}
 DATA PROFILE:
 {json.dumps(profile, indent=2)}
 
@@ -639,9 +672,10 @@ Valid severity values: "High", "Medium", "Low". Valid category values: "Data Qua
         return get_heuristic_recommendations(clean_report, quality_scores)
 
 
-def get_ai_summary(df, clean_report, anomaly_summary, api_key, goal=None):
+def get_ai_summary(df, clean_report, anomaly_summary, api_key, goal=None, industry=None):
     """Call the AI model to generate a plain-English executive summary.
-    If `goal` is given, the summary is steered toward that specific question/focus."""
+    If `goal` is given, the summary is steered toward that specific question/focus.
+    If `industry` is given, the summary is framed using that industry's context."""
     client = anthropic.Anthropic(api_key=api_key)
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -670,10 +704,11 @@ def get_ai_summary(df, clean_report, anomaly_summary, api_key, goal=None):
         }
 
     goal_line = f"\nTHE USER'S SPECIFIC GOAL FOR THIS ANALYSIS: {goal}\nGive extra weight to this in your findings and recommendations.\n" if goal else ""
+    industry_line = f"\nINDUSTRY CONTEXT: {INDUSTRY_AI_CONTEXT[industry]}\n" if industry in INDUSTRY_AI_CONTEXT else ""
 
     prompt = f"""You are Ostrivo, an AI business intelligence assistant. A user has uploaded a dataset.
 Analyse the following data profile and provide a clear, concise executive summary.
-{goal_line}
+{industry_line}{goal_line}
 DATA PROFILE:
 {json.dumps(profile, indent=2)}
 
@@ -699,8 +734,9 @@ Keep the total response under 350 words."""
     return response.content[0].text
 
 
-def ask_data_question(df, question, api_key):
-    """Answer a natural language question about the data."""
+def ask_data_question(df, question, api_key, industry=None):
+    """Answer a natural language question about the data.
+    If `industry` is given, the answer is framed using that industry's context."""
     client = anthropic.Anthropic(api_key=api_key)
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
@@ -726,8 +762,10 @@ def ask_data_question(df, question, api_key):
         "categorical_counts": cat_summary
     }
 
-    prompt = f"""You are Ostrivo, an AI data analyst. Answer the following question about a dataset.
+    industry_line = f"\n{INDUSTRY_AI_CONTEXT[industry]}\n" if industry in INDUSTRY_AI_CONTEXT else ""
 
+    prompt = f"""You are Ostrivo, an AI data analyst. Answer the following question about a dataset.
+{industry_line}
 DATASET CONTEXT:
 {json.dumps(context, indent=2)}
 
@@ -850,12 +888,17 @@ if supabase_client:
         with signup_tab:
             signup_email = st.text_input("Email", key="signup_email")
             signup_password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+            signup_industry = st.selectbox(
+                "Which industry best fits your work?", list(INDUSTRY_OPTIONS.keys()),
+                format_func=lambda k: INDUSTRY_OPTIONS[k], key="signup_industry",
+                help="Ostrivo tailors its analysis and recommendations to this. You can change it later."
+            )
             if st.button("Create Account", key="signup_btn"):
                 if len(signup_password) < 6:
                     st.error("Password must be at least 6 characters.")
                 else:
                     try:
-                        sign_up(supabase_client, signup_email, signup_password)
+                        sign_up(supabase_client, signup_email, signup_password, industry=signup_industry)
                         st.success("Account created! Check your email to confirm it, then log in.")
                     except Exception as e:
                         st.error(f"Sign up failed: {e}")
@@ -878,6 +921,30 @@ with st.sidebar:
             st.session_state.pop('sb_access_token', None)
             st.session_state.pop('sb_refresh_token', None)
             st.rerun()
+
+        current_industry = (st.session_state['auth_user'].user_metadata or {}).get('industry')
+        with st.expander(f"🏭 Industry: {INDUSTRY_OPTIONS.get(current_industry, 'Not set')}"):
+            new_industry = st.selectbox(
+                "Change industry focus", list(INDUSTRY_OPTIONS.keys()),
+                index=list(INDUSTRY_OPTIONS.keys()).index(current_industry) if current_industry in INDUSTRY_OPTIONS else 0,
+                format_func=lambda k: INDUSTRY_OPTIONS[k], key="change_industry_select"
+            )
+            if st.button("Update", key="update_industry_btn"):
+                try:
+                    result = update_industry(supabase_client, new_industry)
+                    st.session_state['auth_user'] = result.user
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Couldn't update: {e}")
+        st.divider()
+    elif not supabase_client:
+        st.markdown("### 🏭 Industry Focus")
+        st.session_state.setdefault('guest_industry', list(INDUSTRY_OPTIONS.keys())[0])
+        st.session_state['guest_industry'] = st.selectbox(
+            "Tailor analysis to an industry", list(INDUSTRY_OPTIONS.keys()),
+            index=list(INDUSTRY_OPTIONS.keys()).index(st.session_state['guest_industry']),
+            format_func=lambda k: INDUSTRY_OPTIONS[k], key="guest_industry_select"
+        )
         st.divider()
 
     st.markdown("### ⚙️ Settings")
@@ -1217,9 +1284,9 @@ for _rc in df.columns:
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "📈 Forecast",
-    "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data"
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+    "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "🏭 Industry Insights",
+    "📈 Forecast", "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data"
 ])
 
 # ── Tab 1: Auto-Pilot ─────────────────────────────────────────────────────────
@@ -1240,13 +1307,14 @@ with tab1:
             result = {'goal': autopilot_goal}
 
             result['advisor_recs'] = get_advisor_recommendations(
-                df, clean_report, anomaly_summary, quality_scores, api_key
+                df, clean_report, anomaly_summary, quality_scores, api_key, industry=get_current_industry()
             )
 
             if api_key:
                 try:
                     result['ai_summary'] = get_ai_summary(
-                        df, clean_report, anomaly_summary, api_key, goal=autopilot_goal or None
+                        df, clean_report, anomaly_summary, api_key, goal=autopilot_goal or None,
+                        industry=get_current_industry()
                     )
                 except Exception as e:
                     log_event("error", f"autopilot ai_summary: {e}")
@@ -1450,7 +1518,7 @@ with tab2:
             st.dataframe(stats_df.rename(columns=col_labels), use_container_width=True, key="table_descriptive_stats")
 
 
-# ── Tab 2: Anomalies ──────────────────────────────────────────────────────────
+# ── Tab 3: Anomalies ──────────────────────────────────────────────────────────
 with tab3:
     st.markdown('<p class="section-title">Anomaly Detection</p>', unsafe_allow_html=True)
 
@@ -1514,7 +1582,7 @@ with tab3:
                 st.caption(f"Showing up to 50 of {anom_count} anomalous rows.")
 
 
-# ── Tab 3: Advisor ────────────────────────────────────────────────────────────
+# ── Tab 4: Advisor ────────────────────────────────────────────────────────────
 with tab4:
     st.markdown('<p class="section-title">Data Health &amp; Recommendations</p>', unsafe_allow_html=True)
 
@@ -1551,7 +1619,8 @@ with tab4:
         with st.spinner("Reviewing your data..."):
             try:
                 st.session_state['advisor_recs'] = get_advisor_recommendations(
-                    df, clean_report, anomaly_summary, quality_scores, api_key
+                    df, clean_report, anomaly_summary, quality_scores, api_key,
+                    industry=get_current_industry()
                 )
             except Exception as e:
                 st.error(f"Error generating recommendations: {e}")
@@ -1572,8 +1641,136 @@ with tab4:
             """, unsafe_allow_html=True)
 
 
-# ── Tab 4: Forecast ───────────────────────────────────────────────────────────
+# ── Tab 5: Industry Insights ──────────────────────────────────────────────────
 with tab5:
+    st.markdown('<p class="section-title">Industry Insights</p>', unsafe_allow_html=True)
+    current_industry = get_current_industry()
+
+    if current_industry not in INDUSTRY_OPTIONS:
+        st.info("Set your industry focus in the sidebar" +
+                (" (or from 'My Dashboards' area after logging in)" if supabase_client else "") +
+                " to see analysis tailored to it.")
+    else:
+        st.caption(f"Tailored for: **{INDUSTRY_OPTIONS[current_industry]}**")
+        default_cat, default_num = suggest_category_and_metric_columns(df)
+        industry_num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not c.startswith('_')]
+        industry_cat_cols = [c for c in df.select_dtypes(include=['object', 'category']).columns if not c.startswith('_')]
+
+        if current_industry == 'sales_retail':
+            if not industry_cat_cols or not industry_num_cols:
+                st.warning("This analysis needs at least one category column and one numeric column.")
+            else:
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    tp_cat = st.selectbox("Category (e.g. product, region)", industry_cat_cols,
+                                           index=industry_cat_cols.index(default_cat) if default_cat in industry_cat_cols else 0,
+                                           format_func=lambda c: col_labels.get(c, c), key="tp_cat")
+                with ic2:
+                    tp_metric = st.selectbox("Metric (e.g. revenue, units sold)", industry_num_cols,
+                                              index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
+                                              format_func=lambda c: col_labels.get(c, c), key="tp_metric")
+                top_df = top_performers_analysis(df, tp_cat, tp_metric, top_n=10)
+                fig_tp = px.bar(
+                    top_df, x=tp_cat, y='total',
+                    title=f"Top {col_labels.get(tp_cat, tp_cat)} by {col_labels.get(tp_metric, tp_metric)}",
+                    labels={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric)},
+                    color='total', color_continuous_scale='Blues'
+                )
+                fig_tp.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_tp, use_container_width=True, key="chart_top_performers")
+                st.dataframe(top_df.rename(columns={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric),
+                                                     'share_pct': 'Share %'}), use_container_width=True)
+
+        elif current_industry == 'finance_banking':
+            if not industry_cat_cols or not industry_num_cols:
+                st.warning("This analysis needs at least one category column and one numeric (amount) column.")
+            else:
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    cr_cat = st.selectbox("Category (e.g. asset, account, holding)", industry_cat_cols,
+                                           index=industry_cat_cols.index(default_cat) if default_cat in industry_cat_cols else 0,
+                                           format_func=lambda c: col_labels.get(c, c), key="cr_cat")
+                with ic2:
+                    cr_amount = st.selectbox("Amount column", industry_num_cols,
+                                              index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
+                                              format_func=lambda c: col_labels.get(c, c), key="cr_amount")
+                cr_result = concentration_risk_analysis(df, cr_cat, cr_amount)
+                risk_class = {'Low': 'insight-box', 'Moderate': 'warning-box', 'High': 'warning-box'}
+                cq1, cq2, cq3 = st.columns(3)
+                cq1.metric("Concentration Index (HHI)", cr_result['hhi'])
+                cq2.metric("Risk Level", cr_result['risk_level'])
+                cq3.metric("Top Holding Share", f"{cr_result['top_category_share_pct']}%")
+                st.markdown(f"""
+                <div class="{risk_class.get(cr_result['risk_level'], 'insight-box')}">
+                    <h4>{'⚠️' if cr_result['risk_level'] != 'Low' else '✅'} {cr_result['risk_level']} concentration risk</h4>
+                    <p>'{cr_result['top_category']}' accounts for {cr_result['top_category_share_pct']}% of total
+                    {col_labels.get(cr_amount, cr_amount)}. The Herfindahl-Hirschman Index (HHI) of {cr_result['hhi']}
+                    {'suggests diversification is reasonable.' if cr_result['risk_level'] == 'Low' else 'suggests concentration risk worth reviewing.'}</p>
+                </div>
+                """, unsafe_allow_html=True)
+                fig_cr = px.bar(
+                    cr_result['breakdown'].head(15), x=cr_cat, y='total',
+                    title=f"{col_labels.get(cr_amount, cr_amount)} by {col_labels.get(cr_cat, cr_cat)}",
+                    labels={cr_cat: col_labels.get(cr_cat, cr_cat), 'total': col_labels.get(cr_amount, cr_amount)},
+                    color='total', color_continuous_scale='Blues'
+                )
+                fig_cr.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_cr, use_container_width=True, key="chart_concentration_risk")
+
+        elif current_industry == 'engineering_manufacturing':
+            if not industry_num_cols:
+                st.warning("This analysis needs at least one numeric measurement column.")
+            else:
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    cc_metric = st.selectbox("Measurement to control-chart", industry_num_cols,
+                                              index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
+                                              format_func=lambda c: col_labels.get(c, c), key="cc_metric")
+                with ic2:
+                    industry_date_col = detect_date_column(df)
+                    cc_seq = industry_date_col
+                    st.caption(f"Ordered by: {col_labels.get(cc_seq, cc_seq)}" if cc_seq else "Ordered by row order (no date column detected)")
+
+                cc_result = control_chart_analysis(df, cc_metric, sequence_col=cc_seq)
+                cq1, cq2, cq3 = st.columns(3)
+                cq1.metric("Center Line (Mean)", cc_result['mean'])
+                cq2.metric("Control Limits", f"{cc_result['lcl']:.2f} to {cc_result['ucl']:.2f}")
+                cq3.metric("Out of Control Points", f"{cc_result['out_of_control_count']} ({cc_result['out_of_control_pct']}%)")
+
+                points_df = cc_result['points']
+                x_axis = points_df[cc_seq] if cc_seq else points_df.index
+
+                fig_cc = go.Figure()
+                fig_cc.add_trace(go.Scatter(x=x_axis, y=points_df[cc_metric], mode='lines+markers',
+                                             name=col_labels.get(cc_metric, cc_metric), line=dict(color='#64748b')))
+                fig_cc.add_hline(y=cc_result['mean'], line_dash='solid', line_color='#16a34a', annotation_text='Center')
+                fig_cc.add_hline(y=cc_result['ucl'], line_dash='dash', line_color='#dc2626', annotation_text='UCL')
+                fig_cc.add_hline(y=cc_result['lcl'], line_dash='dash', line_color='#dc2626', annotation_text='LCL')
+                out_points = points_df[~points_df['in_control']]
+                if not out_points.empty:
+                    out_x = out_points[cc_seq] if cc_seq else out_points.index
+                    fig_cc.add_trace(go.Scatter(x=out_x, y=out_points[cc_metric], mode='markers',
+                                                 name='Out of control', marker=dict(color='#dc2626', size=10, symbol='x')))
+                fig_cc.update_layout(
+                    title=f"Process Control Chart - {col_labels.get(cc_metric, cc_metric)}",
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                )
+                st.plotly_chart(fig_cc, use_container_width=True, key="chart_control_chart")
+                st.caption("Control limits are mean +/- 3 standard deviations, standard SPC (X-chart) methodology. "
+                           "Points outside the red lines may indicate a process control issue worth investigating.")
+
+
+# ── Tab 6: Forecast ───────────────────────────────────────────────────────────
+with tab6:
     st.markdown('<p class="section-title">Forecast</p>', unsafe_allow_html=True)
 
     date_col = detect_date_column(df)
@@ -1643,8 +1840,8 @@ with tab5:
                        "treat it as a directional estimate, not a precise prediction.")
 
 
-# ── Tab 5: AI Summary ─────────────────────────────────────────────────────────
-with tab6:
+# ── Tab 7: AI Summary ─────────────────────────────────────────────────────────
+with tab7:
     st.markdown('<p class="section-title">AI-Powered Executive Summary</p>', unsafe_allow_html=True)
 
     if not api_key:
@@ -1658,7 +1855,7 @@ with tab6:
         if st.button("🤖 Generate Executive Summary", key="gen_summary"):
             with st.spinner("AI is analysing your data..."):
                 try:
-                    summary = get_ai_summary(df, clean_report, anomaly_summary, api_key)
+                    summary = get_ai_summary(df, clean_report, anomaly_summary, api_key, industry=get_current_industry())
                     st.session_state['ai_summary'] = summary
                 except Exception as e:
                     log_event("error", f"get_ai_summary: {e}")
@@ -1668,8 +1865,8 @@ with tab6:
             st.markdown(st.session_state['ai_summary'])
 
 
-# ── Tab 6: Chat ───────────────────────────────────────────────────────────────
-with tab7:
+# ── Tab 8: Chat ───────────────────────────────────────────────────────────────
+with tab8:
     st.markdown('<p class="section-title">Ask Questions About Your Data</p>', unsafe_allow_html=True)
 
     if not api_key:
@@ -1701,7 +1898,7 @@ with tab7:
         if question and st.button("Ask", key="ask_btn"):
             with st.spinner("Thinking..."):
                 try:
-                    answer = ask_data_question(df, question, api_key)
+                    answer = ask_data_question(df, question, api_key, industry=get_current_industry())
                     st.markdown(f"""
                     <div class="insight-box">
                         <h4>💡 Answer</h4>
@@ -1712,8 +1909,8 @@ with tab7:
                     st.error(f"API error: {e}")
 
 
-# ── Tab 7: Raw Data ───────────────────────────────────────────────────────────
-with tab8:
+# ── Tab 9: Raw Data ───────────────────────────────────────────────────────────
+with tab9:
     st.markdown('<p class="section-title">Cleaned Dataset</p>', unsafe_allow_html=True)
     display_df = df.drop(columns=[c for c in ['_anomaly', '_anomaly_score'] if c in df.columns])
     st.dataframe(display_df, use_container_width=True, height=500, key="table_cleaned_dataset")
