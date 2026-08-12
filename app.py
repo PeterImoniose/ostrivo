@@ -23,11 +23,12 @@ from ostrivo_core import (
     combine_dataframes,
     INDUSTRY_OPTIONS, suggest_category_and_metric_columns,
     top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
+    validate_password_strength,
 )
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
     save_analysis, list_saved_analyses, load_analysis, delete_analysis,
-    update_industry,
+    update_industry, verify_signup_code, resend_signup_code,
 )
 from streamlit_cookies_controller import CookieController
 warnings.filterwarnings('ignore')
@@ -864,6 +865,41 @@ if supabase_client:
         </div>
         """, unsafe_allow_html=True)
 
+        if 'pending_signup_email' in st.session_state:
+            pending_email = st.session_state['pending_signup_email']
+            st.subheader("Verify your email")
+            st.write(f"We sent a 6-digit code to **{pending_email}**. Enter it below to activate your account.")
+            verify_code = st.text_input("6-digit code", key="verify_code", max_chars=6)
+            vc1, vc2 = st.columns(2)
+            with vc1:
+                if st.button("Verify & Log In", key="verify_code_btn"):
+                    try:
+                        result = verify_signup_code(supabase_client, pending_email, verify_code)
+                        st.session_state['auth_user'] = result.user
+                        st.session_state['sb_access_token'] = result.session.access_token
+                        st.session_state['sb_refresh_token'] = result.session.refresh_token
+                        cookie_controller.set('ostrivo_access_token', result.session.access_token)
+                        cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
+                        st.session_state.pop('pending_signup_email', None)
+                        # The cookie component needs a render cycle to flush the write to the
+                        # browser before we tear down the DOM with rerun() - an immediate rerun
+                        # can cut it off, so give it a brief moment first.
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Verification failed: {e}")
+            with vc2:
+                if st.button("Resend code", key="resend_code_btn"):
+                    try:
+                        resend_signup_code(supabase_client, pending_email)
+                        st.success("Code resent - check your email.")
+                    except Exception as e:
+                        st.error(f"Couldn't resend: {e}")
+            if st.button("Use a different email", key="cancel_signup_btn"):
+                st.session_state.pop('pending_signup_email', None)
+                st.rerun()
+            st.stop()
+
         login_tab, signup_tab = st.tabs(["🔑 Log In", "✨ Sign Up"])
 
         with login_tab:
@@ -886,20 +922,36 @@ if supabase_client:
                     st.error(f"Login failed: {e}")
 
         with signup_tab:
+            signup_name = st.text_input("Full Name", key="signup_name")
             signup_email = st.text_input("Email", key="signup_email")
-            signup_password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+            signup_password = st.text_input(
+                "Password", type="password", key="signup_password",
+                help="At least 8 characters, with an uppercase letter, a lowercase letter, and a number."
+            )
+            signup_password_confirm = st.text_input(
+                "Re-enter Password", type="password", key="signup_password_confirm"
+            )
             signup_industry = st.selectbox(
                 "Which industry best fits your work?", list(INDUSTRY_OPTIONS.keys()),
                 format_func=lambda k: INDUSTRY_OPTIONS[k], key="signup_industry",
                 help="Ostrivo tailors its analysis and recommendations to this. You can change it later."
             )
             if st.button("Create Account", key="signup_btn"):
-                if len(signup_password) < 6:
-                    st.error("Password must be at least 6 characters.")
+                is_valid, password_message = validate_password_strength(signup_password)
+                if not signup_name.strip():
+                    st.error("Please enter your name.")
+                elif not is_valid:
+                    st.error(password_message)
+                elif signup_password != signup_password_confirm:
+                    st.error("Passwords don't match.")
                 else:
                     try:
-                        sign_up(supabase_client, signup_email, signup_password, industry=signup_industry)
-                        st.success("Account created! Check your email to confirm it, then log in.")
+                        sign_up(
+                            supabase_client, signup_email, signup_password,
+                            industry=signup_industry, full_name=signup_name.strip()
+                        )
+                        st.session_state['pending_signup_email'] = signup_email
+                        st.rerun()
                     except Exception as e:
                         st.error(f"Sign up failed: {e}")
 
@@ -909,7 +961,10 @@ if supabase_client:
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     if supabase_client and 'auth_user' in st.session_state:
-        st.markdown(f"### 👤 {st.session_state['auth_user'].email}")
+        display_full_name = (st.session_state['auth_user'].user_metadata or {}).get('full_name')
+        st.markdown(f"### 👤 {display_full_name or st.session_state['auth_user'].email}")
+        if display_full_name:
+            st.caption(st.session_state['auth_user'].email)
         if st.button("Log Out", key="logout_btn"):
             try:
                 sign_out(supabase_client)

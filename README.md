@@ -125,9 +125,23 @@ Ostrivo works with no accounts at all by default. To turn on login + saved dashb
    SUPABASE_URL = "https://your-project.supabase.co"
    SUPABASE_ANON_KEY = "your-anon-key"
    ```
+5. (Optional but recommended) In the Supabase dashboard, go to **Authentication → Emails →
+   Confirm signup** and replace the `{{ .ConfirmationURL }}` link with `{{ .Token }}` shown as
+   plain text, e.g.:
+   ```html
+   <h2>Confirm your email</h2>
+   <p>Enter this code in Ostrivo to activate your account:</p>
+   <h1>{{ .Token }}</h1>
+   ```
+   This makes signup use a 6-digit code entered right in the app instead of an email link. If you
+   skip this step, Supabase still sends the default link-based email, but Ostrivo's "enter your
+   code" screen won't have a code to receive.
 
-Once set, the app requires login. Saved analyses store the cleaned dataset and computed results
-(quality scores, anomalies, AI summary) - not the original uploaded file.
+Once set, the app requires an account. Signing up asks for a full name, email, and password
+(at least 8 characters with an uppercase letter, a lowercase letter, and a number, entered twice
+to confirm the match) - then a 6-digit code emailed to confirm the account before first login.
+Saved analyses store the cleaned dataset and computed results (quality scores, anomalies, AI
+summary) - not the original uploaded file.
 
 ---
 

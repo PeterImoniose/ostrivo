@@ -7,3 +7,5 @@ ostrivo_report_*.pdf
 ostrivo_cleaned_*.csv
 ostrivo_*.xlsx
 ostrivo_admin.db
+streamlit_out.log
+streamlit_err.log

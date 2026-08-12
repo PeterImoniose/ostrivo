@@ -533,3 +533,18 @@ def control_chart_analysis(df, metric_col, sequence_col=None):
         'out_of_control_pct': round(out_of_control_count / len(data) * 100, 1) if len(data) else 0.0,
         'points': data,
     }
+
+
+def validate_password_strength(password):
+    """Enforce signup password rules: at least 8 characters, one uppercase letter, one
+    lowercase letter, and one digit. Returns (is_valid, message) - message is empty on success,
+    otherwise the first rule that failed."""
+    if len(password) < 8:
+        return False, "Password must be at least 8 characters."
+    if not re.search(r'[A-Z]', password):
+        return False, "Password must include at least one uppercase letter."
+    if not re.search(r'[a-z]', password):
+        return False, "Password must include at least one lowercase letter."
+    if not re.search(r'\d', password):
+        return False, "Password must include at least one number."
+    return True, ""

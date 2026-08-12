@@ -19,6 +19,7 @@ from ostrivo_core import (
     score_sheet_as_data, rank_excel_sheets, combine_dataframes, json_safe,
     suggest_category_and_metric_columns, top_performers_analysis,
     concentration_risk_analysis, control_chart_analysis,
+    validate_password_strength,
 )
 
 
@@ -553,3 +554,35 @@ def test_control_chart_missing_column_raises():
     df = pd.DataFrame({"measurement": [1, 2, 3]})
     with pytest.raises(ValueError):
         control_chart_analysis(df, "nonexistent")
+
+
+# ── validate_password_strength ───────────────────────────────────────────────
+
+def test_validate_password_strength_accepts_valid_password():
+    is_valid, message = validate_password_strength("Secure1Pass")
+    assert is_valid is True
+    assert message == ""
+
+
+def test_validate_password_strength_rejects_too_short():
+    is_valid, message = validate_password_strength("Ab1defg")
+    assert is_valid is False
+    assert "8 characters" in message
+
+
+def test_validate_password_strength_rejects_no_uppercase():
+    is_valid, message = validate_password_strength("lowercase1")
+    assert is_valid is False
+    assert "uppercase" in message
+
+
+def test_validate_password_strength_rejects_no_lowercase():
+    is_valid, message = validate_password_strength("UPPERCASE1")
+    assert is_valid is False
+    assert "lowercase" in message
+
+
+def test_validate_password_strength_rejects_no_digit():
+    is_valid, message = validate_password_strength("NoDigitsHere")
+    assert is_valid is False
+    assert "number" in message
