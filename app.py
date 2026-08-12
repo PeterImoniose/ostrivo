@@ -11,6 +11,7 @@ import re
 from scipy import stats
 import sqlite3
 import uuid
+import time
 from datetime import datetime, timezone
 import warnings
 from ostrivo_core import (
@@ -21,6 +22,11 @@ from ostrivo_core import (
     is_excel_file, get_excel_sheet_names, load_excel_sheet, rank_excel_sheets,
     combine_dataframes,
 )
+from supabase_backend import (
+    get_supabase_client, sign_up, sign_in, sign_out, restore_session,
+    save_analysis, list_saved_analyses, load_analysis, delete_analysis,
+)
+from streamlit_cookies_controller import CookieController
 warnings.filterwarnings('ignore')
 
 # ── Admin logging (SQLite) ───────────────────────────────────────────────────
@@ -779,8 +785,101 @@ Answer in 2-4 concise, direct sentences."""
     return response.content[0].text
 
 
+# ── Authentication (only active when Supabase secrets are configured) ───────
+supabase_client = get_supabase_client(
+    st.secrets.get("SUPABASE_URL") if hasattr(st, "secrets") else None,
+    st.secrets.get("SUPABASE_ANON_KEY") if hasattr(st, "secrets") else None,
+)
+cookie_controller = CookieController() if supabase_client else None
+
+if supabase_client:
+    # A fresh, unauthenticated Client object is created above on every single script
+    # rerun - it must be re-attached to the user's session every time (not just once
+    # at login), or later calls like .table().insert() go out with no JWT and get
+    # rejected by Row Level Security. Session tokens are cached in st.session_state
+    # for this (fast, no cookie round-trip needed most reruns); the cookie is only
+    # needed as a fallback on the very first run after a browser reload.
+    access_token = st.session_state.get('sb_access_token')
+    refresh_token = st.session_state.get('sb_refresh_token')
+    if not (access_token and refresh_token):
+        access_token = cookie_controller.get('ostrivo_access_token')
+        refresh_token = cookie_controller.get('ostrivo_refresh_token')
+
+    if access_token and refresh_token:
+        try:
+            session_result = restore_session(supabase_client, access_token, refresh_token)
+            st.session_state['auth_user'] = session_result.user
+            st.session_state['sb_access_token'] = session_result.session.access_token
+            st.session_state['sb_refresh_token'] = session_result.session.refresh_token
+        except Exception:
+            st.session_state.pop('auth_user', None)
+            st.session_state.pop('sb_access_token', None)
+            st.session_state.pop('sb_refresh_token', None)
+            cookie_controller.remove('ostrivo_access_token')
+            cookie_controller.remove('ostrivo_refresh_token')
+
+    if 'auth_user' not in st.session_state:
+        st.markdown("""
+        <div class="main-header">
+            <h1>📊 Ostrivo</h1>
+            <p>Log in or create a free account to get started.</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        login_tab, signup_tab = st.tabs(["🔑 Log In", "✨ Sign Up"])
+
+        with login_tab:
+            login_email = st.text_input("Email", key="login_email")
+            login_password = st.text_input("Password", type="password", key="login_password")
+            if st.button("Log In", key="login_btn"):
+                try:
+                    result = sign_in(supabase_client, login_email, login_password)
+                    st.session_state['auth_user'] = result.user
+                    st.session_state['sb_access_token'] = result.session.access_token
+                    st.session_state['sb_refresh_token'] = result.session.refresh_token
+                    cookie_controller.set('ostrivo_access_token', result.session.access_token)
+                    cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
+                    # The cookie component needs a render cycle to flush the write to the
+                    # browser before we tear down the DOM with rerun() - an immediate rerun
+                    # can cut it off, so give it a brief moment first.
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Login failed: {e}")
+
+        with signup_tab:
+            signup_email = st.text_input("Email", key="signup_email")
+            signup_password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+            if st.button("Create Account", key="signup_btn"):
+                if len(signup_password) < 6:
+                    st.error("Password must be at least 6 characters.")
+                else:
+                    try:
+                        sign_up(supabase_client, signup_email, signup_password)
+                        st.success("Account created! Check your email to confirm it, then log in.")
+                    except Exception as e:
+                        st.error(f"Sign up failed: {e}")
+
+        st.stop()
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
+    if supabase_client and 'auth_user' in st.session_state:
+        st.markdown(f"### 👤 {st.session_state['auth_user'].email}")
+        if st.button("Log Out", key="logout_btn"):
+            try:
+                sign_out(supabase_client)
+            except Exception:
+                pass
+            cookie_controller.remove('ostrivo_access_token')
+            cookie_controller.remove('ostrivo_refresh_token')
+            st.session_state.pop('auth_user', None)
+            st.session_state.pop('sb_access_token', None)
+            st.session_state.pop('sb_refresh_token', None)
+            st.rerun()
+        st.divider()
+
     st.markdown("### ⚙️ Settings")
     api_key = st.text_input(
         "AI API Key",
@@ -798,6 +897,31 @@ with st.sidebar:
         help="Max 200MB per file. Select multiple files (e.g. one per month) to analyse them together.",
         accept_multiple_files=True
     )
+
+    if supabase_client and 'auth_user' in st.session_state:
+        st.divider()
+        st.markdown("### 📁 My Dashboards")
+        try:
+            saved_list = list_saved_analyses(supabase_client, st.session_state['auth_user'].id)
+        except Exception as e:
+            saved_list = []
+            st.caption(f"Couldn't load saved dashboards: {e}")
+
+        if not saved_list:
+            st.caption("No saved dashboards yet. Analyse some data, then save it from the Raw Data tab.")
+        for saved_item in saved_list:
+            sd1, sd2, sd3 = st.columns([3, 1, 1])
+            with sd1:
+                st.caption(f"**{saved_item['name']}**  \n{saved_item['row_count']} rows")
+            with sd2:
+                if st.button("Load", key=f"load_{saved_item['id']}"):
+                    st.session_state['loaded_analysis'] = load_analysis(supabase_client, saved_item['id'])
+                    st.session_state.pop('logged_upload', None)
+                    st.rerun()
+            with sd3:
+                if st.button("🗑️", key=f"delete_{saved_item['id']}"):
+                    delete_analysis(supabase_client, saved_item['id'])
+                    st.rerun()
 
     st.divider()
     st.markdown("### 📖 How it works")
@@ -844,7 +968,13 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-if not uploaded_files:
+using_loaded_analysis = False
+if uploaded_files:
+    st.session_state.pop('loaded_analysis', None)  # a fresh upload overrides any previously loaded one
+elif 'loaded_analysis' in st.session_state:
+    using_loaded_analysis = True
+
+if not uploaded_files and not using_loaded_analysis:
     col1, col2, col3 = st.columns(3)
     with col1:
         st.markdown("""
@@ -872,133 +1002,147 @@ if not uploaded_files:
         """, unsafe_allow_html=True)
 
     st.info("👈 Upload a CSV or Excel file in the sidebar to get started. Select multiple files to "
-            "analyse them together (e.g. one file per month).")
+            "analyse them together (e.g. one file per month)."
+            + (" Or load a saved dashboard from the sidebar." if supabase_client and 'auth_user' in st.session_state else ""))
     st.stop()
 
-display_name = uploaded_files[0].name if len(uploaded_files) == 1 else f"{len(uploaded_files)}_files_combined"
-
 # ── Load and process data ─────────────────────────────────────────────────────
-try:
-    named_dfs = []       # [(filename, df), ...]
-    sheet_choice_notes = []  # info about auto-picked sheets, multi-file mode only
+if using_loaded_analysis:
+    loaded = st.session_state['loaded_analysis']
+    df = loaded['df']
+    clean_report = loaded['clean_report']
+    anomaly_summary = loaded['anomaly_summary']
+    display_name = loaded['name']
+    if loaded.get('ai_summary'):
+        st.session_state['ai_summary'] = loaded['ai_summary']
+else:
+    display_name = uploaded_files[0].name if len(uploaded_files) == 1 else f"{len(uploaded_files)}_files_combined"
 
-    if len(uploaded_files) == 1:
-        f = uploaded_files[0]
-        if is_excel_file(f.name):
-            sheets_cache_key = f.name
-            if st.session_state.get('excel_sheets_cache_key') != sheets_cache_key:
-                sheet_names = get_excel_sheet_names(f)
-                if len(sheet_names) > 1:
-                    sheets = {name: load_excel_sheet(f, name) for name in sheet_names}
-                    st.session_state['excel_sheets'] = sheets
-                    st.session_state['excel_sheet_ranking'] = rank_excel_sheets(sheets)
-                else:
-                    st.session_state['excel_sheets'] = None
-                st.session_state['excel_sheets_cache_key'] = sheets_cache_key
-                st.session_state.pop('excel_sheet_ai_suggestion', None)
+    try:
+        named_dfs = []       # [(filename, df), ...]
+        sheet_choice_notes = []  # info about auto-picked sheets, multi-file mode only
 
-            sheets = st.session_state.get('excel_sheets')
-
-            if sheets:
-                ranked = st.session_state['excel_sheet_ranking']
-                sheet_options = [name for name, score in ranked]
-
-                if api_key and 'excel_sheet_ai_suggestion' not in st.session_state:
-                    with st.spinner("Working out which sheet has your data..."):
-                        st.session_state['excel_sheet_ai_suggestion'] = get_ai_sheet_recommendation(sheets, api_key)
-                ai_suggestion = st.session_state.get('excel_sheet_ai_suggestion')
-                default_sheet = ai_suggestion if ai_suggestion in sheet_options else sheet_options[0]
-
-                st.markdown('<p class="section-title">Multiple Sheets Detected</p>', unsafe_allow_html=True)
-                st.caption(f"This workbook has {len(sheet_options)} sheets. Ostrivo ranked them by how likely "
-                           f"each is to be the real data table (vs. notes, instructions, or a cover page).")
-                selected_sheet = st.selectbox(
-                    "Which sheet should Ostrivo analyse?", sheet_options,
-                    index=sheet_options.index(default_sheet)
-                )
-                if ai_suggestion:
-                    if ai_suggestion == selected_sheet:
-                        st.caption(f"🤖 AI agrees: **{ai_suggestion}** looks like the data sheet.")
-                    else:
-                        st.caption(f"🤖 AI suggested **{ai_suggestion}**, but you've selected **{selected_sheet}**.")
-                named_dfs = [(f.name, sheets[selected_sheet])]
-            else:
-                named_dfs = [(f.name, load_data(f))]
-        else:
-            named_dfs = [(f.name, load_data(f))]
-
-    else:
-        # Multiple files: auto-pick the best sheet per file (no per-file manual picker,
-        # to keep the UI sane when there are many files) and combine them into one dataset.
-        with st.spinner(f"Reading {len(uploaded_files)} files..."):
-            for f in uploaded_files:
-                if is_excel_file(f.name):
+        if len(uploaded_files) == 1:
+            f = uploaded_files[0]
+            if is_excel_file(f.name):
+                sheets_cache_key = f.name
+                if st.session_state.get('excel_sheets_cache_key') != sheets_cache_key:
                     sheet_names = get_excel_sheet_names(f)
                     if len(sheet_names) > 1:
                         sheets = {name: load_excel_sheet(f, name) for name in sheet_names}
-                        ranked = rank_excel_sheets(sheets)
-                        best_sheet = ranked[0][0]
-                        if api_key:
-                            ai_pick = get_ai_sheet_recommendation(sheets, api_key)
-                            if ai_pick:
-                                best_sheet = ai_pick
-                        named_dfs.append((f.name, sheets[best_sheet]))
-                        sheet_choice_notes.append(f"{f.name}: used sheet '{best_sheet}'")
+                        st.session_state['excel_sheets'] = sheets
+                        st.session_state['excel_sheet_ranking'] = rank_excel_sheets(sheets)
+                    else:
+                        st.session_state['excel_sheets'] = None
+                    st.session_state['excel_sheets_cache_key'] = sheets_cache_key
+                    st.session_state.pop('excel_sheet_ai_suggestion', None)
+
+                sheets = st.session_state.get('excel_sheets')
+
+                if sheets:
+                    ranked = st.session_state['excel_sheet_ranking']
+                    sheet_options = [name for name, score in ranked]
+
+                    if api_key and 'excel_sheet_ai_suggestion' not in st.session_state:
+                        with st.spinner("Working out which sheet has your data..."):
+                            st.session_state['excel_sheet_ai_suggestion'] = get_ai_sheet_recommendation(sheets, api_key)
+                    ai_suggestion = st.session_state.get('excel_sheet_ai_suggestion')
+                    default_sheet = ai_suggestion if ai_suggestion in sheet_options else sheet_options[0]
+
+                    st.markdown('<p class="section-title">Multiple Sheets Detected</p>', unsafe_allow_html=True)
+                    st.caption(f"This workbook has {len(sheet_options)} sheets. Ostrivo ranked them by how likely "
+                               f"each is to be the real data table (vs. notes, instructions, or a cover page).")
+                    selected_sheet = st.selectbox(
+                        "Which sheet should Ostrivo analyse?", sheet_options,
+                        index=sheet_options.index(default_sheet)
+                    )
+                    if ai_suggestion:
+                        if ai_suggestion == selected_sheet:
+                            st.caption(f"🤖 AI agrees: **{ai_suggestion}** looks like the data sheet.")
+                        else:
+                            st.caption(f"🤖 AI suggested **{ai_suggestion}**, but you've selected **{selected_sheet}**.")
+                    named_dfs = [(f.name, sheets[selected_sheet])]
+                else:
+                    named_dfs = [(f.name, load_data(f))]
+            else:
+                named_dfs = [(f.name, load_data(f))]
+
+        else:
+            # Multiple files: auto-pick the best sheet per file (no per-file manual picker,
+            # to keep the UI sane when there are many files) and combine them into one dataset.
+            with st.spinner(f"Reading {len(uploaded_files)} files..."):
+                for f in uploaded_files:
+                    if is_excel_file(f.name):
+                        sheet_names = get_excel_sheet_names(f)
+                        if len(sheet_names) > 1:
+                            sheets = {name: load_excel_sheet(f, name) for name in sheet_names}
+                            ranked = rank_excel_sheets(sheets)
+                            best_sheet = ranked[0][0]
+                            if api_key:
+                                ai_pick = get_ai_sheet_recommendation(sheets, api_key)
+                                if ai_pick:
+                                    best_sheet = ai_pick
+                            named_dfs.append((f.name, sheets[best_sheet]))
+                            sheet_choice_notes.append(f"{f.name}: used sheet '{best_sheet}'")
+                        else:
+                            named_dfs.append((f.name, load_data(f)))
                     else:
                         named_dfs.append((f.name, load_data(f)))
-                else:
-                    named_dfs.append((f.name, load_data(f)))
 
-    if len(named_dfs) == 1:
-        raw_df = named_dfs[0][1]
-        combine_summary = None
-    else:
-        raw_df, combine_summary = combine_dataframes(named_dfs)
+        if len(named_dfs) == 1:
+            raw_df = named_dfs[0][1]
+            combine_summary = None
+        else:
+            raw_df, combine_summary = combine_dataframes(named_dfs)
 
-    if combine_summary:
-        st.markdown('<p class="section-title">Multiple Files Combined</p>', unsafe_allow_html=True)
-        st.caption(f"Combined {combine_summary['files_combined']} files into "
-                   f"{combine_summary['total_rows']:,} rows total. A 'source_file' column was added "
-                   f"so you can filter or break down charts by file.")
-        if not combine_summary['columns_matched']:
-            st.markdown("""
-            <div class="warning-box">
-                <h4>⚠️ Columns don't fully match across files</h4>
-                <p>Some files have different columns. Missing values were left blank rather than
-                causing an error - check the Raw Data tab if anything looks off.</p>
-            </div>
-            """, unsafe_allow_html=True)
-        with st.expander("Per-file details"):
-            for fname, count in combine_summary['file_row_counts'].items():
-                st.caption(f"- {fname}: {count:,} rows")
-            for note in sheet_choice_notes:
-                st.caption(f"- {note}")
+        if combine_summary:
+            st.markdown('<p class="section-title">Multiple Files Combined</p>', unsafe_allow_html=True)
+            st.caption(f"Combined {combine_summary['files_combined']} files into "
+                       f"{combine_summary['total_rows']:,} rows total. A 'source_file' column was added "
+                       f"so you can filter or break down charts by file.")
+            if not combine_summary['columns_matched']:
+                st.markdown("""
+                <div class="warning-box">
+                    <h4>⚠️ Columns don't fully match across files</h4>
+                    <p>Some files have different columns. Missing values were left blank rather than
+                    causing an error - check the Raw Data tab if anything looks off.</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with st.expander("Per-file details"):
+                for fname, count in combine_summary['file_row_counts'].items():
+                    st.caption(f"- {fname}: {count:,} rows")
+                for note in sheet_choice_notes:
+                    st.caption(f"- {note}")
 
-    with st.spinner("Cleaning your data..."):
-        df, clean_report = clean_data(raw_df)
-        df, anomaly_summary = detect_anomalies(df)
-        if st.session_state.get('logged_upload') != display_name:
-            # Deliberately no filename or data content logged here - only anonymous shape/counts.
-            upload_detail = f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols"
-            if len(named_dfs) > 1:
-                upload_detail += f" ({len(named_dfs)} files)"
-            log_event("upload", upload_detail)
-            st.session_state['logged_upload'] = display_name
-except Exception as e:
-    log_event("error", "upload failed")
-    st.error(f"Error loading file(s): {e}")
-    st.stop()
+        with st.spinner("Cleaning your data..."):
+            df, clean_report = clean_data(raw_df)
+            df, anomaly_summary = detect_anomalies(df)
+            if st.session_state.get('logged_upload') != display_name:
+                # Deliberately no filename or data content logged here - only anonymous shape/counts.
+                upload_detail = f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols"
+                if len(named_dfs) > 1:
+                    upload_detail += f" ({len(named_dfs)} files)"
+                log_event("upload", upload_detail)
+                st.session_state['logged_upload'] = display_name
+    except Exception as e:
+        log_event("error", "upload failed")
+        st.error(f"Error loading file(s): {e}")
+        st.stop()
 
-# ── Column labels ────────────────────────────────────────────────────────────
-labels_cache_key = f"{display_name}_{len(df.columns)}_{bool(api_key)}"
-if st.session_state.get('col_labels_cache_key') != labels_cache_key:
-    with st.spinner("Labelling columns..."):
-        st.session_state['col_labels'] = get_column_labels(df, api_key)
-    st.session_state['col_labels_cache_key'] = labels_cache_key
-col_labels = st.session_state['col_labels']
+if using_loaded_analysis:
+    col_labels = loaded['col_labels']
+    quality_scores = loaded['quality_scores']
+else:
+    # ── Column labels ────────────────────────────────────────────────────────
+    labels_cache_key = f"{display_name}_{len(df.columns)}_{bool(api_key)}"
+    if st.session_state.get('col_labels_cache_key') != labels_cache_key:
+        with st.spinner("Labelling columns..."):
+            st.session_state['col_labels'] = get_column_labels(df, api_key)
+        st.session_state['col_labels_cache_key'] = labels_cache_key
+    col_labels = st.session_state['col_labels']
 
-# ── Data quality scores ──────────────────────────────────────────────────────
-quality_scores = get_data_quality_scores(clean_report, anomaly_summary)
+    # ── Data quality scores ──────────────────────────────────────────────────
+    quality_scores = get_data_quality_scores(clean_report, anomaly_summary)
 
 # ── KPI row ───────────────────────────────────────────────────────────────────
 st.markdown('<p class="section-title">Dataset Overview</p>', unsafe_allow_html=True)
@@ -1621,6 +1765,20 @@ with tab8:
         ):
             log_event("excel_export")
         st.caption("Import via Power BI's Get Data → Excel Workbook, or Get Data → Text/CSV for the CSV export.")
+
+    if supabase_client and 'auth_user' in st.session_state:
+        st.markdown('<p class="section-title">Save This Analysis</p>', unsafe_allow_html=True)
+        save_name = st.text_input("Name this analysis", value=display_name.split('.')[0], key="save_analysis_name")
+        if st.button("💾 Save to My Dashboards", key="save_analysis_btn"):
+            try:
+                save_analysis(
+                    supabase_client, st.session_state['auth_user'].id, save_name, df,
+                    clean_report, quality_scores, anomaly_summary,
+                    st.session_state.get('ai_summary'), col_labels, display_name,
+                )
+                st.success(f"Saved as '{save_name}'! Find it in 'My Dashboards' in the sidebar.")
+            except Exception as e:
+                st.error(f"Couldn't save: {e}")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""

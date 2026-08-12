@@ -11,6 +11,26 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 
+def json_safe(obj):
+    """Recursively convert numpy/pandas scalar types (and NaN) into plain JSON-serializable
+    Python types. Needed before sending report dicts (clean_report, quality_scores, etc.) to
+    an external JSON API like Supabase, since numpy int64/float64/bool_ aren't natively
+    JSON-serializable and NaN isn't valid JSON."""
+    if isinstance(obj, dict):
+        return {str(k): json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return None if np.isnan(obj) else float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, float) and obj != obj:  # NaN
+        return None
+    return obj
+
+
 def combine_dataframes(named_dfs):
     """Combine multiple (filename, DataFrame) pairs into one DataFrame for analysing together
     (e.g. one file per month). Adds a 'source_file' column and uses an outer-join concat so

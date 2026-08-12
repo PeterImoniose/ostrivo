@@ -28,6 +28,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - **Auto-Pilot** - one-click full analysis: type an optional goal, get summary + recommendations + forecast in a single view
 - **Help assistant** - a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
 - **Admin console** - password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
+- **User accounts** (optional, requires Supabase setup) - sign up / log in, save an analysis, and reload it later from "My Dashboards." Each user's saved analyses are private, enforced by Postgres Row Level Security, not just app-level checks. Session persists across page reloads via a cookie. If Supabase isn't configured, Ostrivo runs exactly as before, no login required.
 
 ---
 
@@ -48,6 +49,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - [x] Auto-Pilot one-click analysis
 - [x] Sidebar help assistant
 - [x] Password-gated admin console
+- [x] Optional user accounts with RLS-enforced private saved dashboards
 - [x] Custom UI styling
 
 ---
@@ -104,6 +106,29 @@ customer-uploaded data is ever stored or shown here.
 
 ---
 
+## 👤 User Accounts (optional)
+
+Ostrivo works with no accounts at all by default. To turn on login + saved dashboards:
+
+1. Create a free project at [supabase.com](https://supabase.com)
+2. In the Supabase SQL Editor, run the contents of [`supabase_schema.sql`](supabase_schema.sql) once -
+   this creates the `saved_analyses` table with Row Level Security policies so each user can only
+   ever read/write their own rows
+3. From Project Settings → API, grab the **Project URL** and the **anon/publishable key** (never
+   the secret/service_role key - that one bypasses Row Level Security and should never be used
+   in this app)
+4. Add both as secrets: locally in `.streamlit/secrets.toml`, and on Streamlit Cloud under
+   **Settings → Secrets**:
+   ```toml
+   SUPABASE_URL = "https://your-project.supabase.co"
+   SUPABASE_ANON_KEY = "your-anon-key"
+   ```
+
+Once set, the app requires login. Saved analyses store the cleaned dataset and computed results
+(quality scores, anomalies, AI summary) - not the original uploaded file.
+
+---
+
 ## 🧪 Testing
 
 Core data-processing logic (cleaning, anomaly detection, forecasting, quality scoring, PDF/Excel
@@ -139,6 +164,7 @@ CI runs these tests automatically on every push via GitHub Actions.
 | Statistics | SciPy |
 | Reporting | fpdf2 (PDF export), xlsxwriter (Excel export) |
 | Activity logging | SQLite |
+| Auth & user data | Supabase (Postgres + Auth, Row Level Security) |
 | Testing | pytest, GitHub Actions CI |
 
 ---

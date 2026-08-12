@@ -16,7 +16,7 @@ from ostrivo_core import (
     get_data_quality_scores, get_heuristic_recommendations,
     _pdf_safe, generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet,
-    score_sheet_as_data, rank_excel_sheets, combine_dataframes,
+    score_sheet_as_data, rank_excel_sheets, combine_dataframes, json_safe,
 )
 
 
@@ -168,6 +168,48 @@ def test_combine_dataframes_single_file():
 def test_combine_dataframes_empty_list_raises():
     with pytest.raises(ValueError):
         combine_dataframes([])
+
+
+# ── json_safe ────────────────────────────────────────────────────────────────
+
+def test_json_safe_converts_numpy_int():
+    assert json_safe(np.int64(5)) == 5
+    assert isinstance(json_safe(np.int64(5)), int)
+
+
+def test_json_safe_converts_numpy_float():
+    assert json_safe(np.float64(2.5)) == 2.5
+    assert isinstance(json_safe(np.float64(2.5)), float)
+
+
+def test_json_safe_converts_numpy_nan_to_none():
+    assert json_safe(np.float64('nan')) is None
+    assert json_safe(float('nan')) is None
+
+
+def test_json_safe_converts_numpy_bool():
+    assert json_safe(np.bool_(True)) is True
+    assert isinstance(json_safe(np.bool_(True)), bool)
+
+
+def test_json_safe_recurses_into_dict_and_list():
+    original = {
+        'a': np.int64(3),
+        'b': [np.float64(1.5), np.int64(2)],
+        'c': {'nested': np.bool_(False)},
+    }
+    result = json_safe(original)
+    assert result == {'a': 3, 'b': [1.5, 2], 'c': {'nested': False}}
+    assert isinstance(result['a'], int)
+    assert isinstance(result['c']['nested'], bool)
+
+
+def test_json_safe_real_clean_report_round_trips_through_json():
+    import json
+    df = pd.DataFrame({"a": [1, 2, None], "b": ["x", "y", "x"]})
+    _, report = clean_data(df)
+    # Would raise TypeError before json_safe if numpy types leaked through
+    json.dumps(json_safe(report))
 
 
 # ── clean_data ─────────────────────────────────────────────────────────────────
