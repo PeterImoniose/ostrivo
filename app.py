@@ -392,7 +392,16 @@ st.markdown("""
         color: #0f172a;
         margin: 1.5rem 0 1rem 0;
         padding-bottom: 0.5rem;
-        border-bottom: 2px solid #e2e8f0;
+        border-bottom: 2px solid rgba(128, 128, 128, 0.3);
+    }
+
+    @media (prefers-color-scheme: dark) {
+        .section-title {
+            color: #f1f5f9;
+        }
+        .footer-note {
+            color: #cbd5e1;
+        }
     }
 
     .stButton > button {
@@ -483,7 +492,7 @@ st.markdown("""
         font-size: 0.78rem;
         margin-top: 3rem;
         padding-top: 1.5rem;
-        border-top: 1px solid #e2e8f0;
+        border-top: 1px solid rgba(128, 128, 128, 0.3);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -991,13 +1000,13 @@ with tab1:
                                          mode='lines', line=dict(width=0), fill='tonexty',
                                          fillcolor='rgba(2,132,199,0.15)', name='Confidence range', hoverinfo='skip'))
             fig_ap.add_trace(go.Scatter(x=actual_ap[detect_date_column(df)], y=actual_ap[metric],
-                                         mode='lines', name='Actual', line=dict(color='#0f172a', width=2)))
+                                         mode='lines', name='Actual', line=dict(color='#64748b', width=2)))
             fig_ap.add_trace(go.Scatter(x=future_ap[detect_date_column(df)], y=future_ap[metric],
                                          mode='lines', name='Forecast', line=dict(color='#0284c7', width=2, dash='dash')))
             fig_ap.update_layout(
                 title=f"{metric_label_ap} Forecast — Next 30 Periods",
                 plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'), title_font=dict(size=14, color='#0f172a'),
+                font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                 legend=dict(orientation='h', y=-0.25)
             )
             st.plotly_chart(fig_ap, use_container_width=True, key="chart_autopilot_forecast")
@@ -1034,8 +1043,8 @@ with tab2:
             fig.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a'),
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b'),
                 showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True, key="chart_histogram")
@@ -1050,8 +1059,8 @@ with tab2:
             fig2.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a')
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b')
             )
             st.plotly_chart(fig2, use_container_width=True, key="chart_boxplot")
 
@@ -1069,8 +1078,8 @@ with tab2:
                 text_auto=True
             )
             fig3.update_layout(
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a'),
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b'),
                 height=500
             )
             st.plotly_chart(fig3, use_container_width=True, key="chart_corr_heatmap")
@@ -1101,8 +1110,8 @@ with tab2:
             fig4.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a')
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b')
             )
             st.plotly_chart(fig4, use_container_width=True, key="chart_scatter")
 
@@ -1123,8 +1132,8 @@ with tab2:
             fig5.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a'),
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b'),
                 showlegend=False
             )
             st.plotly_chart(fig5, use_container_width=True, key="chart_category_breakdown")
@@ -1185,8 +1194,8 @@ with tab3:
             fig_a.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a')
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b')
             )
             st.plotly_chart(fig_a, use_container_width=True, key="chart_anomaly_scatter")
 
@@ -1300,7 +1309,7 @@ with tab5:
             ))
             fig_fc.add_trace(go.Scatter(
                 x=actual[date_col], y=actual[metric_col], mode='lines',
-                name='Actual', line=dict(color='#0f172a', width=2)
+                name='Actual', line=dict(color='#64748b', width=2)
             ))
             fig_fc.add_trace(go.Scatter(
                 x=future[date_col], y=future[metric_col], mode='lines',
@@ -1310,8 +1319,8 @@ with tab5:
                 title=f"{metric_label} Forecast — Next {periods} Periods",
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
-                font=dict(family='Inter', color='#374151'),
-                title_font=dict(size=14, color='#0f172a'),
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b'),
                 legend=dict(orientation='h', y=-0.25)
             )
             st.plotly_chart(fig_fc, use_container_width=True, key="chart_forecast")

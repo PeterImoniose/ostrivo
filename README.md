@@ -143,6 +143,8 @@ CI runs these tests automatically on every push via GitHub Actions.
 
 ## 📸 Screenshots
 
+![Ostrivo Dashboard](screenshot.png)
+
 Upload any CSV or Excel → instant dashboard, anomaly detection, and AI summary.
 
 ---
