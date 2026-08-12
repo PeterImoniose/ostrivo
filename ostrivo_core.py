@@ -12,7 +12,8 @@ from sklearn.preprocessing import StandardScaler
 
 
 def load_data(uploaded_file):
-    """Load CSV or Excel file into DataFrame."""
+    """Load CSV or Excel file into DataFrame. For multi-sheet Excel files, loads the first sheet only -
+    use get_excel_sheet_names/load_excel_sheet for sheet-aware loading."""
     name = uploaded_file.name.lower()
     if name.endswith('.csv'):
         df = pd.read_csv(uploaded_file)
@@ -21,6 +22,56 @@ def load_data(uploaded_file):
     else:
         raise ValueError("Unsupported file type")
     return df
+
+
+def is_excel_file(filename):
+    """Return True if the filename has an Excel extension."""
+    return filename.lower().endswith(('.xlsx', '.xls'))
+
+
+def get_excel_sheet_names(uploaded_file):
+    """Return the list of sheet names in an Excel file without loading all the data."""
+    uploaded_file.seek(0)
+    xls = pd.ExcelFile(uploaded_file)
+    return xls.sheet_names
+
+
+def load_excel_sheet(uploaded_file, sheet_name):
+    """Load a single named sheet from an Excel file."""
+    uploaded_file.seek(0)
+    return pd.read_excel(uploaded_file, sheet_name=sheet_name)
+
+
+def score_sheet_as_data(df):
+    """Heuristic score (higher = more likely a real tabular data sheet, not notes/instructions/cover pages).
+    Rewards larger, well-filled sheets with short, distinct column headers and at least one numeric column."""
+    if df is None or df.empty or df.shape[1] == 0:
+        return 0.0
+
+    rows, cols = df.shape
+    size_score = min(rows, 1000) * min(cols, 20)
+
+    col_names = [str(c) for c in df.columns]
+    avg_len = sum(len(c) for c in col_names) / max(len(col_names), 1)
+    header_score = 1.0 if avg_len < 40 else 0.4
+    unnamed_ratio = sum(1 for c in col_names if c.lower().startswith('unnamed')) / max(len(col_names), 1)
+    header_score *= (1 - unnamed_ratio * 0.5)
+
+    total_cells = rows * cols
+    fill_ratio = 1 - (df.isnull().sum().sum() / total_cells) if total_cells > 0 else 0
+
+    numeric_cols = df.select_dtypes(include=[np.number]).shape[1]
+    numeric_score = 1.0 if numeric_cols > 0 else 0.6
+
+    return round(size_score * header_score * max(fill_ratio, 0.1) * numeric_score, 2)
+
+
+def rank_excel_sheets(sheets):
+    """Given {sheet_name: DataFrame}, return [(sheet_name, score), ...] ranked most to least
+    likely to be the primary data table."""
+    scored = [(name, score_sheet_as_data(sheet_df)) for name, sheet_df in sheets.items()]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
 
 
 def clean_data(df):

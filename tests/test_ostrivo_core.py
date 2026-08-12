@@ -15,6 +15,8 @@ from ostrivo_core import (
     generate_forecast, pick_forecast_metric, humanize_column_name,
     get_data_quality_scores, get_heuristic_recommendations,
     _pdf_safe, generate_pdf_report, generate_excel_report,
+    is_excel_file, get_excel_sheet_names, load_excel_sheet,
+    score_sheet_as_data, rank_excel_sheets,
 )
 
 
@@ -61,6 +63,70 @@ def test_load_data_unsupported_type():
     f = FakeUploadedFile(b"whatever", "test.txt")
     with pytest.raises(ValueError):
         load_data(f)
+
+
+# ── multi-sheet Excel detection ─────────────────────────────────────────────
+
+def _make_multi_sheet_excel():
+    buf = io.BytesIO()
+    data_df = pd.DataFrame({
+        "region": ["North", "South", "East", "West"] * 5,
+        "revenue": [100 + i * 3 for i in range(20)],
+        "cost": [50 + i for i in range(20)],
+    })
+    notes_df = pd.DataFrame({
+        "Please read before using this spreadsheet": [
+            "This workbook contains confidential sales data.",
+            "Contact finance@example.com with questions.",
+            "Data last refreshed on 2026-01-01.",
+        ]
+    })
+    with pd.ExcelWriter(buf, engine='xlsxwriter') as writer:
+        notes_df.to_excel(writer, sheet_name='Read Me First', index=False)
+        data_df.to_excel(writer, sheet_name='Sales Data', index=False)
+    buf.seek(0)
+    return FakeUploadedFile(buf.getvalue(), "multi_sheet.xlsx")
+
+
+def test_is_excel_file():
+    assert is_excel_file("report.xlsx") is True
+    assert is_excel_file("report.XLS") is True
+    assert is_excel_file("report.csv") is False
+
+
+def test_get_excel_sheet_names():
+    f = _make_multi_sheet_excel()
+    names = get_excel_sheet_names(f)
+    assert names == ['Read Me First', 'Sales Data']
+
+
+def test_load_excel_sheet():
+    f = _make_multi_sheet_excel()
+    df = load_excel_sheet(f, 'Sales Data')
+    assert list(df.columns) == ['region', 'revenue', 'cost']
+    assert len(df) == 20
+
+
+def test_score_sheet_as_data_empty_df():
+    assert score_sheet_as_data(pd.DataFrame()) == 0.0
+
+
+def test_score_sheet_as_data_prefers_real_data_over_notes():
+    data_df = pd.DataFrame({
+        "region": ["North", "South"] * 10,
+        "revenue": list(range(20)),
+    })
+    notes_df = pd.DataFrame({
+        "Please read before using this spreadsheet": ["some long instructional text here"] * 2
+    })
+    assert score_sheet_as_data(data_df) > score_sheet_as_data(notes_df)
+
+
+def test_rank_excel_sheets_puts_data_sheet_first():
+    f = _make_multi_sheet_excel()
+    sheets = {name: load_excel_sheet(f, name) for name in get_excel_sheet_names(f)}
+    ranked = rank_excel_sheets(sheets)
+    assert ranked[0][0] == 'Sales Data'
 
 
 # ── clean_data ─────────────────────────────────────────────────────────────────

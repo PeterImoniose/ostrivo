@@ -18,6 +18,7 @@ from ostrivo_core import (
     generate_forecast, pick_forecast_metric, humanize_column_name,
     get_data_quality_scores, get_heuristic_recommendations,
     generate_pdf_report, generate_excel_report,
+    is_excel_file, get_excel_sheet_names, load_excel_sheet, rank_excel_sheets,
 )
 warnings.filterwarnings('ignore')
 
@@ -500,6 +501,40 @@ st.markdown("""
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
+def get_ai_sheet_recommendation(sheets, api_key):
+    """Ask the AI which sheet is most likely the primary data table to analyse.
+    Returns a sheet name from `sheets`, or None if unavailable/inconclusive."""
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        previews = {}
+        for name, sheet_df in sheets.items():
+            previews[name] = {
+                "shape": list(sheet_df.shape),
+                "columns": [str(c) for c in sheet_df.columns[:10]],
+                "sample_rows": sheet_df.head(3).astype(str).to_dict('records'),
+            }
+
+        prompt = f"""Multiple sheets were found in an uploaded Excel file. Identify which ONE sheet contains
+the primary tabular business data to analyse (not instructions, notes, cover pages, or metadata).
+
+SHEETS:
+{json.dumps(previews, indent=2, default=str)}
+
+Respond with ONLY the exact sheet name, nothing else - no punctuation, no explanation."""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=50,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        log_api_call("sheet_classification", "claude-sonnet-4-6", response)
+        suggested = response.content[0].text.strip()
+        return suggested if suggested in sheets else None
+    except Exception as e:
+        log_event("error", f"get_ai_sheet_recommendation: {e}")
+        return None
+
+
 def get_column_labels(df, api_key):
     """Return a dict mapping each real column to a human-readable display label.
     Uses the AI model when a key is available, otherwise falls back to a heuristic."""
@@ -838,19 +873,63 @@ if uploaded_file is None:
     st.stop()
 
 # ── Load and process data ─────────────────────────────────────────────────────
-with st.spinner("Loading and cleaning your data..."):
-    try:
+try:
+    raw_df = None
+
+    if is_excel_file(uploaded_file.name):
+        sheets_cache_key = uploaded_file.name
+        if st.session_state.get('excel_sheets_cache_key') != sheets_cache_key:
+            sheet_names = get_excel_sheet_names(uploaded_file)
+            if len(sheet_names) > 1:
+                sheets = {name: load_excel_sheet(uploaded_file, name) for name in sheet_names}
+                st.session_state['excel_sheets'] = sheets
+                st.session_state['excel_sheet_ranking'] = rank_excel_sheets(sheets)
+            else:
+                st.session_state['excel_sheets'] = None
+            st.session_state['excel_sheets_cache_key'] = sheets_cache_key
+            st.session_state.pop('excel_sheet_ai_suggestion', None)
+
+        sheets = st.session_state.get('excel_sheets')
+
+        if sheets:
+            ranked = st.session_state['excel_sheet_ranking']
+            sheet_options = [name for name, score in ranked]
+
+            if api_key and 'excel_sheet_ai_suggestion' not in st.session_state:
+                with st.spinner("Working out which sheet has your data..."):
+                    st.session_state['excel_sheet_ai_suggestion'] = get_ai_sheet_recommendation(sheets, api_key)
+            ai_suggestion = st.session_state.get('excel_sheet_ai_suggestion')
+            default_sheet = ai_suggestion if ai_suggestion in sheet_options else sheet_options[0]
+
+            st.markdown('<p class="section-title">Multiple Sheets Detected</p>', unsafe_allow_html=True)
+            st.caption(f"This workbook has {len(sheet_options)} sheets. Ostrivo ranked them by how likely "
+                       f"each is to be the real data table (vs. notes, instructions, or a cover page).")
+            selected_sheet = st.selectbox(
+                "Which sheet should Ostrivo analyse?", sheet_options,
+                index=sheet_options.index(default_sheet)
+            )
+            if ai_suggestion:
+                if ai_suggestion == selected_sheet:
+                    st.caption(f"🤖 AI agrees: **{ai_suggestion}** looks like the data sheet.")
+                else:
+                    st.caption(f"🤖 AI suggested **{ai_suggestion}**, but you've selected **{selected_sheet}**.")
+            raw_df = sheets[selected_sheet]
+        else:
+            raw_df = load_data(uploaded_file)
+    else:
         raw_df = load_data(uploaded_file)
+
+    with st.spinner("Cleaning your data..."):
         df, clean_report = clean_data(raw_df)
         df, anomaly_summary = detect_anomalies(df)
         if st.session_state.get('logged_upload') != uploaded_file.name:
             # Deliberately no filename or data content logged here - only anonymous shape/counts.
             log_event("upload", f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols")
             st.session_state['logged_upload'] = uploaded_file.name
-    except Exception as e:
-        log_event("error", "upload failed")
-        st.error(f"Error loading file: {e}")
-        st.stop()
+except Exception as e:
+    log_event("error", "upload failed")
+    st.error(f"Error loading file: {e}")
+    st.stop()
 
 # ── Column labels ────────────────────────────────────────────────────────────
 labels_cache_key = f"{uploaded_file.name}_{len(df.columns)}_{bool(api_key)}"
