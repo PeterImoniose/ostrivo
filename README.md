@@ -164,13 +164,22 @@ won't send to real recipients otherwise - true of every major provider, not Brev
 
 Once logged in, pick your industry from the signup form (or change it anytime from the sidebar).
 Ostrivo stores the choice in your account's Supabase user metadata - no extra table needed - and
-uses it to tailor both the AI-generated wording and a dedicated **Industry Insights** tab:
+uses it to tailor both the AI-generated wording and a dedicated **Industry Insights** tab. Every
+industry gets a KPI row, its core chart, a trend-over-time view, and a **Predictive Insights**
+section - each predictive feature states upfront what columns your data needs for it to run:
 
-| Industry | Industry Insights tab shows |
-|---|---|
-| Sales & Retail Business | Top Performers - ranks a category (product, region, etc.) by a chosen metric |
-| Finance & Banking | Concentration Risk - Herfindahl-Hirschman Index (HHI) and risk level across a category/amount breakdown |
-| Engineering & Manufacturing | Process Control Chart - standard SPC (X-chart) with center line, control limits, and out-of-control points |
+| Industry | Descriptive analysis | Predictive Insights |
+|---|---|---|
+| Sales & Retail Business | Top Performers ranking, share breakdown | Product/customer **segmentation** (clustering) + revenue forecast |
+| Finance & Banking | Concentration Risk (HHI), risk level, breakdown | **Fraud-risk flagging** (reuses anomaly detection) |
+| Engineering & Manufacturing | Process Control Chart (SPC/X-chart), measurement distribution | **Time-to-limit estimate** - trend-based prediction of when a measurement will breach its control limit |
+| Healthcare | Department/ward volume ranking, control chart for wait time/length of stay | Patient volume **forecast** + **readmission/outcome risk** model (only runs if the data has a two-outcome column, e.g. yes/no) |
+
+The predictive features are deliberately honest about their limits: segmentation and forecasting
+work on most uploaded data, but the Engineering time-to-limit estimate is a trend extrapolation,
+not full Remaining Useful Life (RUL) prediction (that needs run-to-failure sensor data most
+spreadsheets don't have), and the Healthcare risk model is an operational signal only - never a
+clinical prediction, and it simply doesn't appear if the data doesn't support it.
 
 Guest/no-login mode still works with no industry set, showing the original general-purpose analysis.
 

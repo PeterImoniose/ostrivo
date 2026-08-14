@@ -19,7 +19,8 @@ from ostrivo_core import (
     score_sheet_as_data, rank_excel_sheets, combine_dataframes, json_safe,
     suggest_category_and_metric_columns, top_performers_analysis,
     concentration_risk_analysis, control_chart_analysis,
-    validate_password_strength,
+    validate_password_strength, time_trend_analysis, industry_kpi_summary,
+    segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
 )
 
 
@@ -586,3 +587,156 @@ def test_validate_password_strength_rejects_no_digit():
     is_valid, message = validate_password_strength("NoDigitsHere")
     assert is_valid is False
     assert "number" in message
+
+
+# ── time_trend_analysis ──────────────────────────────────────────────────────
+
+def test_time_trend_analysis_aggregates_by_day():
+    df = pd.DataFrame({
+        "date": ["2026-01-01", "2026-01-01", "2026-01-02"],
+        "revenue": [100, 50, 200],
+    })
+    result = time_trend_analysis(df, "date", "revenue")
+    assert list(result["total"]) == [150, 200]
+    assert len(result) == 2
+
+
+def test_time_trend_analysis_ignores_unparseable_dates():
+    df = pd.DataFrame({
+        "date": ["2026-01-01", "not-a-date", "2026-01-02"],
+        "revenue": [100, 999, 200],
+    })
+    result = time_trend_analysis(df, "date", "revenue")
+    assert result["total"].sum() == 300
+
+
+def test_time_trend_analysis_missing_column_raises():
+    df = pd.DataFrame({"date": ["2026-01-01"], "revenue": [100]})
+    with pytest.raises(ValueError):
+        time_trend_analysis(df, "date", "nonexistent")
+
+
+# ── industry_kpi_summary ─────────────────────────────────────────────────────
+
+def test_industry_kpi_summary_typical():
+    df = pd.DataFrame({
+        "department": ["ER", "ER", "Cardiology", "Radiology"],
+        "patients": [40, 10, 30, 20],
+    })
+    result = industry_kpi_summary(df, "department", "patients")
+    assert result["total"] == 100.0
+    assert result["category_count"] == 3
+    assert result["top_category"] == "ER"
+    assert result["top_category_share_pct"] == 50.0
+    assert result["avg_per_category"] == pytest.approx(33.33, abs=0.01)
+
+
+def test_industry_kpi_summary_empty_dataframe():
+    df = pd.DataFrame({"department": [], "patients": []})
+    result = industry_kpi_summary(df, "department", "patients")
+    assert result["category_count"] == 0
+    assert result["top_category"] is None
+    assert result["avg_per_category"] == 0.0
+
+
+def test_industry_kpi_summary_missing_column_raises():
+    df = pd.DataFrame({"department": ["ER"], "patients": [1]})
+    with pytest.raises(ValueError):
+        industry_kpi_summary(df, "department", "nonexistent")
+
+
+# ── segment_categories ───────────────────────────────────────────────────────
+
+def test_segment_categories_assigns_every_category():
+    df = pd.DataFrame({
+        "product": ["A", "A", "B", "B", "C", "C", "D", "D"],
+        "revenue": [1000, 1000, 900, 900, 50, 50, 40, 40],
+        "units": [10, 10, 9, 9, 200, 200, 190, 190],
+    })
+    result = segment_categories(df, "product", ["revenue", "units"], n_clusters=2)
+    assert set(result["segments"]["product"]) == {"A", "B", "C", "D"}
+    assert result["n_clusters"] == 2
+    assert len(result["profile"]) == 2
+    assert result["profile"]["category_count"].sum() == 4
+
+
+def test_segment_categories_reduces_clusters_when_too_few_categories():
+    df = pd.DataFrame({"product": ["A", "B"], "revenue": [100, 50]})
+    result = segment_categories(df, "product", ["revenue"], n_clusters=5)
+    assert result["n_clusters"] == 2
+
+
+def test_segment_categories_too_few_categories_raises():
+    df = pd.DataFrame({"product": ["A"], "revenue": [100]})
+    with pytest.raises(ValueError):
+        segment_categories(df, "product", ["revenue"])
+
+
+def test_segment_categories_missing_numeric_col_raises():
+    df = pd.DataFrame({"product": ["A", "B"], "revenue": [100, 50]})
+    with pytest.raises(ValueError):
+        segment_categories(df, "product", ["nonexistent"])
+
+
+# ── estimate_time_to_limit ───────────────────────────────────────────────────
+
+def test_estimate_time_to_limit_detects_increasing_trend():
+    points_df = pd.DataFrame({"measurement": [10, 12, 14, 16, 18, 20]})
+    result = estimate_time_to_limit(points_df, "measurement", ucl=30, lcl=0)
+    assert result["trend"] == "increasing"
+    assert result["heading_toward"] == "upper control limit"
+    assert result["periods_to_breach"] > 0
+
+
+def test_estimate_time_to_limit_stable_data_has_no_breach_estimate():
+    points_df = pd.DataFrame({"measurement": [10, 10, 10, 10, 10, 10]})
+    result = estimate_time_to_limit(points_df, "measurement", ucl=30, lcl=0)
+    assert result["trend"] == "stable"
+    assert result["periods_to_breach"] is None
+
+
+def test_estimate_time_to_limit_too_few_points_raises():
+    points_df = pd.DataFrame({"measurement": [10, 12, 14]})
+    with pytest.raises(ValueError):
+        estimate_time_to_limit(points_df, "measurement", ucl=30, lcl=0)
+
+
+def test_estimate_time_to_limit_missing_column_raises():
+    points_df = pd.DataFrame({"measurement": [10, 12, 14, 16, 18]})
+    with pytest.raises(ValueError):
+        estimate_time_to_limit(points_df, "nonexistent", ucl=30, lcl=0)
+
+
+# ── binary_outcome_risk_model ────────────────────────────────────────────────
+
+def test_binary_outcome_risk_model_typical():
+    np.random.seed(42)
+    n = 60
+    risk_feature = np.concatenate([np.random.normal(20, 3, n // 2), np.random.normal(60, 3, n // 2)])
+    outcome = ["no"] * (n // 2) + ["yes"] * (n // 2)
+    df = pd.DataFrame({"risk_feature": risk_feature, "readmitted": outcome})
+    result = binary_outcome_risk_model(df, "readmitted", ["risk_feature"])
+    assert 0.0 <= result["accuracy"] <= 1.0
+    assert result["positive_class"] == "yes"
+    assert "risk_score" in result["scored_data"].columns
+    assert len(result["feature_importances"]) == 1
+    scores = result["scored_data"]["risk_score"]
+    assert list(scores) == sorted(scores, reverse=True)
+
+
+def test_binary_outcome_risk_model_too_few_rows_raises():
+    df = pd.DataFrame({"outcome": ["yes", "no"] * 5, "feature": range(10)})
+    with pytest.raises(ValueError):
+        binary_outcome_risk_model(df, "outcome", ["feature"])
+
+
+def test_binary_outcome_risk_model_wrong_class_count_raises():
+    df = pd.DataFrame({"outcome": ["a", "b", "c"] * 10, "feature": range(30)})
+    with pytest.raises(ValueError):
+        binary_outcome_risk_model(df, "outcome", ["feature"])
+
+
+def test_binary_outcome_risk_model_missing_feature_raises():
+    df = pd.DataFrame({"outcome": ["yes", "no"] * 15, "feature": range(30)})
+    with pytest.raises(ValueError):
+        binary_outcome_risk_model(df, "outcome", ["nonexistent"])

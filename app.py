@@ -23,7 +23,8 @@ from ostrivo_core import (
     combine_dataframes,
     INDUSTRY_OPTIONS, suggest_category_and_metric_columns,
     top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
-    validate_password_strength,
+    validate_password_strength, time_trend_analysis, industry_kpi_summary,
+    segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
 )
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
@@ -49,6 +50,13 @@ INDUSTRY_AI_CONTEXT = {
         "The user works in engineering/manufacturing. Frame findings around process stability, "
         "defect or failure rates, tolerances, and control limits. Treat anomalies as potential "
         "process control violations worth investigating, not just statistical outliers."
+    ),
+    'healthcare': (
+        "The user works in healthcare (a hospital or medical establishment). Frame findings "
+        "around patient volume, department/ward load, wait times or length of stay, and "
+        "readmission or outcome trends. Treat anomalies as potential care-quality or capacity "
+        "signals worth investigating, not just statistical outliers. Never offer clinical "
+        "advice - stay focused on operational and data-quality insights."
     ),
 }
 
@@ -1418,6 +1426,48 @@ for _rc in df.columns:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+
+def render_forecast_chart(df, date_col, metric_col, col_labels, chart_key, periods=30):
+    """Shared trend + seasonality forecast chart, reused by the Forecast tab and any
+    industry's Predictive Insights section that offers a metric forecast."""
+    fc_df, fc_meta = generate_forecast(df, date_col, metric_col, periods=periods)
+    if fc_df is None:
+        st.warning("Not enough data points to build a reliable forecast (at least 5 dated rows are needed).")
+        return
+
+    metric_label = col_labels.get(metric_col, metric_col)
+    actual = fc_df[fc_df['type'] == 'Actual']
+    future = fc_df[fc_df['type'] == 'Forecast']
+
+    fig_fc = go.Figure()
+    fig_fc.add_trace(go.Scatter(
+        x=future[date_col], y=future['upper'], mode='lines',
+        line=dict(width=0), showlegend=False, hoverinfo='skip'
+    ))
+    fig_fc.add_trace(go.Scatter(
+        x=future[date_col], y=future['lower'], mode='lines',
+        line=dict(width=0), fill='tonexty', fillcolor='rgba(2,132,199,0.15)',
+        name='Confidence range', hoverinfo='skip'
+    ))
+    fig_fc.add_trace(go.Scatter(
+        x=actual[date_col], y=actual[metric_col], mode='lines',
+        name='Actual', line=dict(color='#64748b', width=2)
+    ))
+    fig_fc.add_trace(go.Scatter(
+        x=future[date_col], y=future[metric_col], mode='lines',
+        name='Forecast', line=dict(color='#0284c7', width=2, dash='dash')
+    ))
+    fig_fc.update_layout(
+        title=f"{metric_label} Forecast - Next {periods} Periods",
+        plot_bgcolor='rgba(0,0,0,0)',
+        paper_bgcolor='rgba(0,0,0,0)',
+        font=dict(family='Inter', color='#94a3b8'),
+        title_font=dict(size=14, color='#64748b'),
+        legend=dict(orientation='h', y=-0.25)
+    )
+    st.plotly_chart(fig_fc, use_container_width=True, key=chart_key)
+
+
 # ── Tabs ──────────────────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
     "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "🏭 Industry Insights",
@@ -1791,6 +1841,8 @@ with tab5:
         industry_num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not c.startswith('_')]
         industry_cat_cols = [c for c in df.select_dtypes(include=['object', 'category']).columns if not c.startswith('_')]
 
+        industry_date_col = detect_date_column(df)
+
         if current_industry == 'sales_retail':
             if not industry_cat_cols or not industry_num_cols:
                 st.warning("This analysis needs at least one category column and one numeric column.")
@@ -1804,21 +1856,102 @@ with tab5:
                     tp_metric = st.selectbox("Metric (e.g. revenue, units sold)", industry_num_cols,
                                               index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
                                               format_func=lambda c: col_labels.get(c, c), key="tp_metric")
+
+                sales_kpi = industry_kpi_summary(df, tp_cat, tp_metric)
+                kq1, kq2, kq3, kq4 = st.columns(4)
+                kq1.metric(f"Total {col_labels.get(tp_metric, tp_metric)}", f"{sales_kpi['total']:,.0f}")
+                kq2.metric("Top Performer", str(sales_kpi['top_category']))
+                kq3.metric("Top Share", f"{sales_kpi['top_category_share_pct']}%")
+                kq4.metric("Categories", sales_kpi['category_count'])
+
                 top_df = top_performers_analysis(df, tp_cat, tp_metric, top_n=10)
-                fig_tp = px.bar(
-                    top_df, x=tp_cat, y='total',
-                    title=f"Top {col_labels.get(tp_cat, tp_cat)} by {col_labels.get(tp_metric, tp_metric)}",
-                    labels={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric)},
-                    color='total', color_continuous_scale='Blues'
-                )
-                fig_tp.update_layout(
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
-                    showlegend=False
-                )
-                st.plotly_chart(fig_tp, use_container_width=True, key="chart_top_performers")
+                sc1, sc2 = st.columns(2)
+                with sc1:
+                    fig_tp = px.bar(
+                        top_df, x=tp_cat, y='total',
+                        title=f"Top {col_labels.get(tp_cat, tp_cat)} by {col_labels.get(tp_metric, tp_metric)}",
+                        labels={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric)},
+                        color='total', color_continuous_scale='Blues'
+                    )
+                    fig_tp.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_tp, use_container_width=True, key="chart_top_performers")
+                with sc2:
+                    fig_share = px.pie(
+                        top_df, names=tp_cat, values='total', hole=0.45,
+                        title=f"Share of {col_labels.get(tp_metric, tp_metric)}"
+                    )
+                    fig_share.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                    )
+                    st.plotly_chart(fig_share, use_container_width=True, key="chart_sales_share")
+
                 st.dataframe(top_df.rename(columns={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric),
                                                      'share_pct': 'Share %'}), use_container_width=True)
+
+                if industry_date_col:
+                    sales_trend = time_trend_analysis(df, industry_date_col, tp_metric)
+                    fig_sales_trend = px.line(
+                        sales_trend, x='period', y='total', markers=True,
+                        title=f"{col_labels.get(tp_metric, tp_metric)} Over Time",
+                        labels={'period': col_labels.get(industry_date_col, industry_date_col), 'total': col_labels.get(tp_metric, tp_metric)}
+                    )
+                    fig_sales_trend.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                    )
+                    st.plotly_chart(fig_sales_trend, use_container_width=True, key="chart_sales_trend")
+
+                st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
+                st.info(
+                    "**Segmentation** needs a category column (e.g. product, customer) and at least "
+                    "one numeric column (e.g. revenue, units sold) - two or more numeric columns give "
+                    "richer, more distinct segments."
+                )
+                seg_numeric_choices = st.multiselect(
+                    "Numeric columns to segment on", industry_num_cols,
+                    default=industry_num_cols[:2] if len(industry_num_cols) >= 2 else industry_num_cols[:1],
+                    format_func=lambda c: col_labels.get(c, c), key="sales_seg_numeric"
+                )
+                if df[tp_cat].nunique() < 2:
+                    st.caption(f"Need at least 2 distinct values in {col_labels.get(tp_cat, tp_cat)} to segment - "
+                               f"found {df[tp_cat].nunique()}.")
+                elif not seg_numeric_choices:
+                    st.caption("Pick at least one numeric column above to run segmentation.")
+                else:
+                    seg_result = segment_categories(df, tp_cat, seg_numeric_choices, n_clusters=3)
+                    seg_profile = seg_result['profile']
+                    fig_seg = px.bar(
+                        seg_profile, x='segment', y='category_count',
+                        title=f"Segment Sizes ({seg_result['n_clusters']} segments)",
+                        labels={'segment': 'Segment', 'category_count': f"Number of {col_labels.get(tp_cat, tp_cat)}"},
+                        color='segment', color_continuous_scale='Blues'
+                    )
+                    fig_seg.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_seg, use_container_width=True, key="chart_sales_segments")
+                    st.caption("Average values per segment - use these to tell segments apart "
+                               "(e.g. 'high revenue, low volume').")
+                    st.dataframe(
+                        seg_profile.rename(columns={c: col_labels.get(c, c) for c in seg_numeric_choices}),
+                        use_container_width=True
+                    )
+
+                st.info(
+                    f"**{col_labels.get(tp_metric, tp_metric)} forecast** needs a date/time column plus "
+                    "the numeric metric to project forward - both are already available here."
+                )
+                if industry_date_col:
+                    render_forecast_chart(df, industry_date_col, tp_metric, col_labels, "chart_sales_forecast")
+                else:
+                    st.caption("No date column detected - add one to unlock a forecast.")
 
         elif current_industry == 'finance_banking':
             if not industry_cat_cols or not industry_num_cols:
@@ -1834,11 +1967,13 @@ with tab5:
                                               index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
                                               format_func=lambda c: col_labels.get(c, c), key="cr_amount")
                 cr_result = concentration_risk_analysis(df, cr_cat, cr_amount)
+                finance_kpi = industry_kpi_summary(df, cr_cat, cr_amount)
                 risk_class = {'Low': 'insight-box', 'Moderate': 'warning-box', 'High': 'warning-box'}
-                cq1, cq2, cq3 = st.columns(3)
-                cq1.metric("Concentration Index (HHI)", cr_result['hhi'])
-                cq2.metric("Risk Level", cr_result['risk_level'])
-                cq3.metric("Top Holding Share", f"{cr_result['top_category_share_pct']}%")
+                cq1, cq2, cq3, cq4 = st.columns(4)
+                cq1.metric(f"Total {col_labels.get(cr_amount, cr_amount)}", f"{finance_kpi['total']:,.0f}")
+                cq2.metric("Concentration Index (HHI)", cr_result['hhi'])
+                cq3.metric("Risk Level", cr_result['risk_level'])
+                cq4.metric("Holdings", finance_kpi['category_count'])
                 st.markdown(f"""
                 <div class="{risk_class.get(cr_result['risk_level'], 'insight-box')}">
                     <h4>{'⚠️' if cr_result['risk_level'] != 'Low' else '✅'} {cr_result['risk_level']} concentration risk</h4>
@@ -1847,18 +1982,70 @@ with tab5:
                     {'suggests diversification is reasonable.' if cr_result['risk_level'] == 'Low' else 'suggests concentration risk worth reviewing.'}</p>
                 </div>
                 """, unsafe_allow_html=True)
-                fig_cr = px.bar(
-                    cr_result['breakdown'].head(15), x=cr_cat, y='total',
-                    title=f"{col_labels.get(cr_amount, cr_amount)} by {col_labels.get(cr_cat, cr_cat)}",
-                    labels={cr_cat: col_labels.get(cr_cat, cr_cat), 'total': col_labels.get(cr_amount, cr_amount)},
-                    color='total', color_continuous_scale='Blues'
+                fc1, fc2 = st.columns(2)
+                with fc1:
+                    fig_cr = px.bar(
+                        cr_result['breakdown'].head(15), x=cr_cat, y='total',
+                        title=f"{col_labels.get(cr_amount, cr_amount)} by {col_labels.get(cr_cat, cr_cat)}",
+                        labels={cr_cat: col_labels.get(cr_cat, cr_cat), 'total': col_labels.get(cr_amount, cr_amount)},
+                        color='total', color_continuous_scale='Blues'
+                    )
+                    fig_cr.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_cr, use_container_width=True, key="chart_concentration_risk")
+                with fc2:
+                    fig_cr_pie = px.pie(
+                        cr_result['breakdown'].head(15), names=cr_cat, values='total', hole=0.45,
+                        title=f"Breakdown of {col_labels.get(cr_amount, cr_amount)}"
+                    )
+                    fig_cr_pie.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                    )
+                    st.plotly_chart(fig_cr_pie, use_container_width=True, key="chart_finance_share")
+
+                if industry_date_col:
+                    finance_trend = time_trend_analysis(df, industry_date_col, cr_amount)
+                    fig_finance_trend = px.line(
+                        finance_trend, x='period', y='total', markers=True,
+                        title=f"{col_labels.get(cr_amount, cr_amount)} Over Time",
+                        labels={'period': col_labels.get(industry_date_col, industry_date_col), 'total': col_labels.get(cr_amount, cr_amount)}
+                    )
+                    fig_finance_trend.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                    )
+                    st.plotly_chart(fig_finance_trend, use_container_width=True, key="chart_finance_trend")
+
+                st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
+                st.info(
+                    "**Fraud-risk flagging** reuses anomaly detection across all your numeric columns - "
+                    "the more numeric columns describing each transaction, the more effective it is."
                 )
-                fig_cr.update_layout(
-                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
-                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
-                    showlegend=False
-                )
-                st.plotly_chart(fig_cr, use_container_width=True, key="chart_concentration_risk")
+                if '_anomaly' in df.columns:
+                    finance_flagged = df[df['_anomaly']]
+                    if finance_flagged.empty:
+                        st.caption("No unusual transactions flagged in this dataset.")
+                    else:
+                        st.warning(
+                            f"⚠️ {len(finance_flagged)} transaction(s) "
+                            f"({len(finance_flagged) / len(df) * 100:.1f}%) flagged as statistically "
+                            "unusual - worth reviewing as potential fraud or data-entry signals, not "
+                            "confirmed fraud."
+                        )
+                        finance_display_cols = [c for c in [cr_cat, cr_amount] if c in finance_flagged.columns]
+                        st.dataframe(
+                            finance_flagged[finance_display_cols + ['_anomaly_score']].rename(
+                                columns={**{c: col_labels.get(c, c) for c in finance_display_cols},
+                                         '_anomaly_score': 'Anomaly Score'}
+                            ).sort_values('Anomaly Score').head(20),
+                            use_container_width=True
+                        )
+                else:
+                    st.caption("Anomaly detection needs at least one numeric column - none available.")
 
         elif current_industry == 'engineering_manufacturing':
             if not industry_num_cols:
@@ -1870,15 +2057,15 @@ with tab5:
                                               index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
                                               format_func=lambda c: col_labels.get(c, c), key="cc_metric")
                 with ic2:
-                    industry_date_col = detect_date_column(df)
                     cc_seq = industry_date_col
                     st.caption(f"Ordered by: {col_labels.get(cc_seq, cc_seq)}" if cc_seq else "Ordered by row order (no date column detected)")
 
                 cc_result = control_chart_analysis(df, cc_metric, sequence_col=cc_seq)
-                cq1, cq2, cq3 = st.columns(3)
+                cq1, cq2, cq3, cq4 = st.columns(4)
                 cq1.metric("Center Line (Mean)", cc_result['mean'])
                 cq2.metric("Control Limits", f"{cc_result['lcl']:.2f} to {cc_result['ucl']:.2f}")
                 cq3.metric("Out of Control Points", f"{cc_result['out_of_control_count']} ({cc_result['out_of_control_pct']}%)")
+                cq4.metric("Std Deviation", cc_result['std'])
 
                 points_df = cc_result['points']
                 x_axis = points_df[cc_seq] if cc_seq else points_df.index
@@ -1902,6 +2089,195 @@ with tab5:
                 st.plotly_chart(fig_cc, use_container_width=True, key="chart_control_chart")
                 st.caption("Control limits are mean +/- 3 standard deviations, standard SPC (X-chart) methodology. "
                            "Points outside the red lines may indicate a process control issue worth investigating.")
+
+                fig_hist = px.histogram(
+                    points_df, x=cc_metric, nbins=30,
+                    title=f"Distribution of {col_labels.get(cc_metric, cc_metric)}",
+                    labels={cc_metric: col_labels.get(cc_metric, cc_metric)}
+                )
+                fig_hist.add_vline(x=cc_result['mean'], line_dash='solid', line_color='#16a34a', annotation_text='Mean')
+                fig_hist.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_hist, use_container_width=True, key="chart_measurement_distribution")
+
+                st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
+                st.info(
+                    "**Time-to-limit estimate** projects your control chart's trend forward to estimate "
+                    "how many periods until it would breach a control limit, if the trend continues. "
+                    "Needs at least 5 data points; works best with a date column so points are in true "
+                    "chronological order. This is a lightweight trend estimate, not full predictive "
+                    "maintenance - true Remaining Useful Life (RUL) prediction needs run-to-failure "
+                    "sensor data most spreadsheets don't have."
+                )
+                try:
+                    ttl_result = estimate_time_to_limit(points_df, cc_metric, cc_result['ucl'], cc_result['lcl'])
+                    metric_label_ttl = col_labels.get(cc_metric, cc_metric)
+                    if ttl_result['trend'] == 'stable':
+                        st.success(f"✅ {metric_label_ttl} is stable - no clear trend toward either control limit.")
+                    elif ttl_result['periods_to_breach'] is None:
+                        st.info(f"📈 {metric_label_ttl} is {ttl_result['trend']}, but moving away from its "
+                                "limits - no breach expected on the current trend.")
+                    else:
+                        st.warning(
+                            f"⚠️ At the current trend, {metric_label_ttl} is projected to breach its "
+                            f"{ttl_result['heading_toward']} in approximately "
+                            f"**{ttl_result['periods_to_breach']} periods**."
+                        )
+                except ValueError as e:
+                    st.caption(str(e))
+
+        elif current_industry == 'healthcare':
+            if not industry_cat_cols or not industry_num_cols:
+                st.warning("This analysis needs at least one category column (e.g. department) and one numeric column "
+                           "(e.g. patient count, wait time).")
+            else:
+                ic1, ic2 = st.columns(2)
+                with ic1:
+                    hc_cat = st.selectbox("Department / Ward / Condition", industry_cat_cols,
+                                           index=industry_cat_cols.index(default_cat) if default_cat in industry_cat_cols else 0,
+                                           format_func=lambda c: col_labels.get(c, c), key="hc_cat")
+                with ic2:
+                    hc_metric = st.selectbox("Metric (e.g. patient count, wait time, length of stay)", industry_num_cols,
+                                              index=industry_num_cols.index(default_num) if default_num in industry_num_cols else 0,
+                                              format_func=lambda c: col_labels.get(c, c), key="hc_metric")
+
+                hc_kpi = industry_kpi_summary(df, hc_cat, hc_metric)
+                hq1, hq2, hq3, hq4 = st.columns(4)
+                hq1.metric(f"Total {col_labels.get(hc_metric, hc_metric)}", f"{hc_kpi['total']:,.0f}")
+                hq2.metric("Busiest", str(hc_kpi['top_category']))
+                hq3.metric("Its Share", f"{hc_kpi['top_category_share_pct']}%")
+                hq4.metric("Departments", hc_kpi['category_count'])
+
+                hc_df = top_performers_analysis(df, hc_cat, hc_metric, top_n=10)
+                fig_hc = px.bar(
+                    hc_df, x=hc_cat, y='total',
+                    title=f"{col_labels.get(hc_metric, hc_metric)} by {col_labels.get(hc_cat, hc_cat)}",
+                    labels={hc_cat: col_labels.get(hc_cat, hc_cat), 'total': col_labels.get(hc_metric, hc_metric)},
+                    color='total', color_continuous_scale='Blues'
+                )
+                fig_hc.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                    showlegend=False
+                )
+                st.plotly_chart(fig_hc, use_container_width=True, key="chart_healthcare_volume")
+
+                if industry_date_col:
+                    hc_trend = time_trend_analysis(df, industry_date_col, hc_metric)
+                    fig_hc_trend = px.line(
+                        hc_trend, x='period', y='total', markers=True,
+                        title=f"{col_labels.get(hc_metric, hc_metric)} Over Time",
+                        labels={'period': col_labels.get(industry_date_col, industry_date_col), 'total': col_labels.get(hc_metric, hc_metric)}
+                    )
+                    fig_hc_trend.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                        font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                    )
+                    st.plotly_chart(fig_hc_trend, use_container_width=True, key="chart_healthcare_trend")
+
+                st.markdown('<p class="section-title">Process Monitoring</p>', unsafe_allow_html=True)
+                st.caption("Track a continuous metric like wait time or length of stay for out-of-range signals - "
+                           "the same control-chart technique used in healthcare quality improvement.")
+                hc_cc_metric = st.selectbox("Metric to monitor", industry_num_cols,
+                                             index=industry_num_cols.index(hc_metric) if hc_metric in industry_num_cols else 0,
+                                             format_func=lambda c: col_labels.get(c, c), key="hc_cc_metric")
+                hc_cc_result = control_chart_analysis(df, hc_cc_metric, sequence_col=industry_date_col)
+                hcq1, hcq2, hcq3 = st.columns(3)
+                hcq1.metric("Center Line (Mean)", hc_cc_result['mean'])
+                hcq2.metric("Control Limits", f"{hc_cc_result['lcl']:.2f} to {hc_cc_result['ucl']:.2f}")
+                hcq3.metric("Out of Range Points", f"{hc_cc_result['out_of_control_count']} ({hc_cc_result['out_of_control_pct']}%)")
+
+                hc_points_df = hc_cc_result['points']
+                hc_x_axis = hc_points_df[industry_date_col] if industry_date_col else hc_points_df.index
+
+                fig_hc_cc = go.Figure()
+                fig_hc_cc.add_trace(go.Scatter(x=hc_x_axis, y=hc_points_df[hc_cc_metric], mode='lines+markers',
+                                                name=col_labels.get(hc_cc_metric, hc_cc_metric), line=dict(color='#64748b')))
+                fig_hc_cc.add_hline(y=hc_cc_result['mean'], line_dash='solid', line_color='#16a34a', annotation_text='Center')
+                fig_hc_cc.add_hline(y=hc_cc_result['ucl'], line_dash='dash', line_color='#dc2626', annotation_text='UCL')
+                fig_hc_cc.add_hline(y=hc_cc_result['lcl'], line_dash='dash', line_color='#dc2626', annotation_text='LCL')
+                hc_out_points = hc_points_df[~hc_points_df['in_control']]
+                if not hc_out_points.empty:
+                    hc_out_x = hc_out_points[industry_date_col] if industry_date_col else hc_out_points.index
+                    fig_hc_cc.add_trace(go.Scatter(x=hc_out_x, y=hc_out_points[hc_cc_metric], mode='markers',
+                                                    name='Out of range', marker=dict(color='#dc2626', size=10, symbol='x')))
+                fig_hc_cc.update_layout(
+                    title=f"{col_labels.get(hc_cc_metric, hc_cc_metric)} - Control Chart",
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                )
+                st.plotly_chart(fig_hc_cc, use_container_width=True, key="chart_healthcare_control")
+                st.caption("Control limits are mean +/- 3 standard deviations. Points outside the red lines may "
+                           "indicate a capacity or care-quality issue worth investigating - not a clinical diagnosis.")
+
+                st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
+
+                st.info(
+                    f"**{col_labels.get(hc_metric, hc_metric)} forecast** needs a date/time column plus "
+                    "the numeric metric to project forward - both are already available here."
+                )
+                if industry_date_col:
+                    render_forecast_chart(df, industry_date_col, hc_metric, col_labels, "chart_healthcare_forecast")
+                else:
+                    st.caption("No date column detected - add one to unlock a patient volume forecast.")
+
+                st.info(
+                    "**Readmission/outcome risk** needs a column with exactly two outcome values "
+                    "(e.g. a 'readmitted' column with yes/no) plus at least one numeric column to "
+                    "learn from, and 20+ rows with complete data. This is an operational risk signal "
+                    "only - never a clinical diagnosis."
+                )
+                hc_binary_cat_cols = [c for c in industry_cat_cols if df[c].nunique() == 2]
+                if not hc_binary_cat_cols:
+                    st.caption("No two-outcome column detected in this dataset (e.g. a yes/no readmission column).")
+                else:
+                    rc1, rc2 = st.columns(2)
+                    with rc1:
+                        hc_outcome_col = st.selectbox("Outcome column", hc_binary_cat_cols,
+                                                       format_func=lambda c: col_labels.get(c, c), key="hc_outcome_col")
+                    with rc2:
+                        hc_risk_features = st.multiselect(
+                            "Numeric predictors", industry_num_cols,
+                            default=industry_num_cols[:3],
+                            format_func=lambda c: col_labels.get(c, c), key="hc_risk_features"
+                        )
+                    if not hc_risk_features:
+                        st.caption("Pick at least one numeric predictor above to train the model.")
+                    else:
+                        try:
+                            hc_risk_result = binary_outcome_risk_model(df, hc_outcome_col, hc_risk_features)
+                            rq1, rq2 = st.columns(2)
+                            rq1.metric("Model Accuracy", f"{hc_risk_result['accuracy'] * 100:.1f}%")
+                            rq2.metric("Predicting", str(hc_risk_result['positive_class']))
+                            st.caption("Accuracy measured on a held-out 25% test split - a directional "
+                                       "signal, not a guarantee.")
+
+                            hc_importance_df = pd.DataFrame(hc_risk_result['feature_importances'])
+                            hc_importance_df['feature'] = hc_importance_df['feature'].map(lambda c: col_labels.get(c, c))
+                            fig_hc_importance = px.bar(
+                                hc_importance_df, x='weight', y='feature', orientation='h',
+                                title="What Drives the Risk Score",
+                                color='weight', color_continuous_scale='RdBu'
+                            )
+                            fig_hc_importance.update_layout(
+                                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                                font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
+                                showlegend=False
+                            )
+                            st.plotly_chart(fig_hc_importance, use_container_width=True, key="chart_healthcare_risk_importance")
+
+                            hc_scored_rename = {c: col_labels.get(c, c) for c in hc_risk_features}
+                            hc_scored_rename[hc_outcome_col] = col_labels.get(hc_outcome_col, hc_outcome_col)
+                            hc_scored_rename['risk_score'] = 'Risk Score'
+                            st.dataframe(
+                                hc_risk_result['scored_data'].head(20).rename(columns=hc_scored_rename),
+                                use_container_width=True
+                            )
+                        except ValueError as e:
+                            st.caption(str(e))
 
 
 # ── Tab 6: Forecast ───────────────────────────────────────────────────────────

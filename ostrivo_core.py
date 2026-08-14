@@ -7,7 +7,10 @@ import re
 import numpy as np
 import pandas as pd
 from fpdf import FPDF
+from sklearn.cluster import KMeans
 from sklearn.ensemble import IsolationForest
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
 
@@ -429,6 +432,7 @@ INDUSTRY_OPTIONS = {
     'sales_retail': 'Sales & Retail Business',
     'finance_banking': 'Finance & Banking',
     'engineering_manufacturing': 'Engineering & Manufacturing',
+    'healthcare': 'Healthcare',
 }
 
 
@@ -532,6 +536,183 @@ def control_chart_analysis(df, metric_col, sequence_col=None):
         'out_of_control_count': out_of_control_count,
         'out_of_control_pct': round(out_of_control_count / len(data) * 100, 1) if len(data) else 0.0,
         'points': data,
+    }
+
+
+def time_trend_analysis(df, date_col, metric_col, freq='D'):
+    """Aggregate metric_col over time (summed per period) for a trend chart - reused across
+    every industry's Insights tab wherever a date column is available. freq follows pandas
+    offset aliases ('D' daily, 'W' weekly, 'M' monthly). Returns a DataFrame [period, total]."""
+    if date_col not in df.columns or metric_col not in df.columns:
+        raise ValueError("date_col and metric_col must both exist in the DataFrame")
+
+    data = df[[date_col, metric_col]].dropna().copy()
+    data[date_col] = pd.to_datetime(data[date_col], errors='coerce')
+    data = data.dropna(subset=[date_col])
+
+    trend = data.set_index(date_col).resample(freq)[metric_col].sum().reset_index()
+    trend.columns = ['period', 'total']
+    return trend
+
+
+def industry_kpi_summary(df, category_col, metric_col):
+    """Headline KPIs for a category+metric industry view (total, category count, top
+    category and its share, average per category) - reused across every industry that ranks
+    a category by a numeric metric (Sales & Retail, Finance & Banking, Healthcare)."""
+    if category_col not in df.columns or metric_col not in df.columns:
+        raise ValueError("category_col and metric_col must both exist in the DataFrame")
+
+    grouped = df.groupby(category_col)[metric_col].sum().reset_index()
+    grouped.columns = [category_col, 'total']
+    total_sum = float(grouped['total'].sum())
+    category_count = len(grouped)
+
+    if category_count:
+        top_row = grouped.sort_values('total', ascending=False).iloc[0]
+        top_category = top_row[category_col]
+        top_category_share_pct = round(float(top_row['total']) / total_sum * 100, 1) if total_sum else 0.0
+    else:
+        top_category = None
+        top_category_share_pct = 0.0
+
+    return {
+        'total': round(total_sum, 2),
+        'category_count': category_count,
+        'top_category': top_category,
+        'top_category_share_pct': top_category_share_pct,
+        'avg_per_category': round(total_sum / category_count, 2) if category_count else 0.0,
+    }
+
+
+def segment_categories(df, category_col, numeric_cols, n_clusters=3):
+    """Group category_col entities (products, customers, departments, ...) into behavioural
+    segments using KMeans on their aggregated numeric_cols - e.g. 'high revenue, low volume'
+    vs 'high volume, low revenue' product groups. Needs at least 2 distinct categories; uses
+    fewer than n_clusters if there aren't enough categories to support it. Returns a dict with
+    the per-category segment assignments and a per-segment profile (average values) so
+    segments can be labelled in plain English."""
+    if category_col not in df.columns:
+        raise ValueError("category_col must exist in the DataFrame")
+    missing = [c for c in numeric_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"numeric_cols not found in DataFrame: {missing}")
+    if not numeric_cols:
+        raise ValueError("At least one numeric column is required")
+
+    grouped = df.groupby(category_col)[numeric_cols].sum().reset_index()
+    if len(grouped) < 2:
+        raise ValueError("Need at least 2 distinct categories to segment")
+
+    effective_k = min(n_clusters, len(grouped))
+    scaled = StandardScaler().fit_transform(grouped[numeric_cols].values)
+
+    km = KMeans(n_clusters=effective_k, n_init=10, random_state=42)
+    grouped = grouped.copy()
+    grouped['segment'] = km.fit_predict(scaled)
+
+    profile = grouped.groupby('segment')[numeric_cols].mean().reset_index()
+    profile['category_count'] = grouped.groupby('segment')[category_col].count().values
+
+    return {
+        'segments': grouped,
+        'profile': profile,
+        'n_clusters': effective_k,
+    }
+
+
+def estimate_time_to_limit(points_df, metric_col, ucl, lcl):
+    """Fit a simple linear trend to metric_col over its row sequence and estimate how many
+    periods until it would breach the nearest control limit, if the trend continues - a
+    lightweight, honest form of predictive maintenance from trend extrapolation. This is not
+    a substitute for true Remaining Useful Life (RUL) prediction, which needs run-to-failure
+    sensor data most uploads won't have. Needs at least 5 data points. Returns a dict
+    describing the trend direction and, only if genuinely heading toward a limit, the
+    estimated number of periods until breach (None otherwise)."""
+    if metric_col not in points_df.columns:
+        raise ValueError("metric_col must exist in the DataFrame")
+
+    values = points_df[metric_col].dropna().reset_index(drop=True)
+    if len(values) < 5:
+        raise ValueError("Need at least 5 data points to estimate a trend")
+
+    x = np.arange(len(values))
+    slope, _ = np.polyfit(x, values, 1)
+    current_value = float(values.iloc[-1])
+
+    if abs(slope) < 1e-9:
+        return {
+            'slope': 0.0,
+            'trend': 'stable',
+            'heading_toward': None,
+            'periods_to_breach': None,
+            'current_value': round(current_value, 4),
+        }
+
+    if slope > 0:
+        target_limit, heading_toward = ucl, 'upper control limit'
+    else:
+        target_limit, heading_toward = lcl, 'lower control limit'
+
+    periods_to_breach = (target_limit - current_value) / slope
+    if periods_to_breach < 0:
+        periods_to_breach = None
+
+    return {
+        'slope': round(float(slope), 6),
+        'trend': 'increasing' if slope > 0 else 'decreasing',
+        'heading_toward': heading_toward,
+        'periods_to_breach': round(float(periods_to_breach), 1) if periods_to_breach is not None else None,
+        'current_value': round(current_value, 4),
+    }
+
+
+def binary_outcome_risk_model(df, outcome_col, feature_cols):
+    """Trains a simple logistic regression to estimate the probability of a binary outcome
+    (e.g. readmitted yes/no, churned yes/no) from numeric feature columns - a directional risk
+    signal, not a clinical or otherwise authoritative prediction. Needs outcome_col to have
+    exactly 2 distinct values and at least 20 complete rows. Returns accuracy on a held-out
+    test split, feature importances ranked by influence, and a copy of the data with a
+    'risk_score' column (0-1 probability of the outcome) added, sorted highest-risk first."""
+    if outcome_col not in df.columns:
+        raise ValueError("outcome_col must exist in the DataFrame")
+    missing = [c for c in feature_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"feature_cols not found in DataFrame: {missing}")
+    if not feature_cols:
+        raise ValueError("At least one feature column is required")
+
+    data = df[[outcome_col] + feature_cols].dropna().reset_index(drop=True)
+    outcome_values = data[outcome_col].unique()
+    if len(outcome_values) != 2:
+        raise ValueError("outcome_col must have exactly 2 distinct values")
+    if len(data) < 20:
+        raise ValueError("Need at least 20 complete rows to train a meaningful model")
+
+    positive_class = sorted(outcome_values, key=str)[-1]
+    y = (data[outcome_col] == positive_class).astype(int)
+    X_scaled = StandardScaler().fit_transform(data[feature_cols].values)
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X_scaled, y, test_size=0.25, random_state=42,
+        stratify=y if y.nunique() > 1 else None
+    )
+
+    model = LogisticRegression(max_iter=1000)
+    model.fit(X_train, y_train)
+    accuracy = float(model.score(X_test, y_test))
+
+    importances = sorted(
+        zip(feature_cols, model.coef_[0]), key=lambda pair: abs(pair[1]), reverse=True
+    )
+
+    data = data.copy()
+    data['risk_score'] = model.predict_proba(X_scaled)[:, 1]
+
+    return {
+        'accuracy': round(accuracy, 3),
+        'positive_class': positive_class,
+        'feature_importances': [{'feature': f, 'weight': round(float(w), 4)} for f, w in importances],
+        'scored_data': data.sort_values('risk_score', ascending=False).reset_index(drop=True),
     }
 
 
