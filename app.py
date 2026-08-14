@@ -1054,12 +1054,19 @@ with st.sidebar:
                     if st.button("Yes, delete everything", key="confirm_delete_btn"):
                         try:
                             delete_own_account(supabase_client)
-                            cookie_controller.remove('ostrivo_access_token')
-                            cookie_controller.remove('ostrivo_refresh_token')
-                            st.session_state.clear()
-                            st.rerun()
                         except Exception as e:
                             st.error(f"Couldn't delete account: {e}")
+                        else:
+                            # The account is already gone at this point - local cookie
+                            # cleanup is best-effort and must never make a successful
+                            # deletion look like it failed.
+                            try:
+                                cookie_controller.remove('ostrivo_access_token')
+                                cookie_controller.remove('ostrivo_refresh_token')
+                            except Exception:
+                                pass
+                            st.session_state.clear()
+                            st.rerun()
                 with dc2:
                     if st.button("Cancel", key="cancel_delete_btn"):
                         st.session_state['confirming_delete'] = False
