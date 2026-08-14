@@ -61,6 +61,14 @@ def update_industry(client, industry):
     return client.auth.update_user({"data": {"industry": industry}})
 
 
+def delete_own_account(client):
+    """Permanently delete the logged-in user's account and all their saved analyses (cascade).
+    Calls the delete_own_account() Postgres function (see supabase_schema.sql), which is
+    scoped to auth.uid() server-side - this never touches the service_role key, and cannot
+    delete any account other than the one making the call."""
+    return client.rpc("delete_own_account").execute()
+
+
 def sign_out(client):
     client.auth.sign_out()
 

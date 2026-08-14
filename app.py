@@ -28,7 +28,7 @@ from ostrivo_core import (
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
     save_analysis, list_saved_analyses, load_analysis, delete_analysis,
-    update_industry, verify_signup_code, resend_signup_code,
+    update_industry, verify_signup_code, resend_signup_code, delete_own_account,
 )
 from streamlit_cookies_controller import CookieController
 warnings.filterwarnings('ignore')
@@ -1040,6 +1040,30 @@ with st.sidebar:
                     st.rerun()
                 except Exception as e:
                     st.error(f"Couldn't update: {e}")
+
+        with st.expander("⚠️ Delete Account"):
+            st.caption("Permanently deletes your account and every saved analysis. This can't be undone.")
+            if not st.session_state.get('confirming_delete'):
+                if st.button("Delete My Account", key="delete_account_btn"):
+                    st.session_state['confirming_delete'] = True
+                    st.rerun()
+            else:
+                st.error("Are you sure? This permanently deletes your account and all saved analyses.")
+                dc1, dc2 = st.columns(2)
+                with dc1:
+                    if st.button("Yes, delete everything", key="confirm_delete_btn"):
+                        try:
+                            delete_own_account(supabase_client)
+                            cookie_controller.remove('ostrivo_access_token')
+                            cookie_controller.remove('ostrivo_refresh_token')
+                            st.session_state.clear()
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Couldn't delete account: {e}")
+                with dc2:
+                    if st.button("Cancel", key="cancel_delete_btn"):
+                        st.session_state['confirming_delete'] = False
+                        st.rerun()
         st.divider()
     elif not supabase_client:
         st.markdown("### 🏭 Industry Focus")

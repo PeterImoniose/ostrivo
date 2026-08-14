@@ -29,3 +29,21 @@ create policy "update_own_analyses" on saved_analyses
 
 create policy "delete_own_analyses" on saved_analyses
     for delete using (auth.uid() = user_id);
+
+-- Lets a logged-in user delete their own account (and, via the cascade above, all their
+-- saved analyses) without ever needing the service_role key. SECURITY DEFINER gives this
+-- function the elevated privilege needed to delete from auth.users, but the WHERE clause
+-- is hardcoded to auth.uid() - the caller's own ID from their JWT - so it can never be used
+-- to delete anyone else's account, no matter what's passed in (nothing is passed in).
+create or replace function delete_own_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+    delete from auth.users where id = auth.uid();
+end;
+$$;
+
+grant execute on function delete_own_account() to authenticated;
