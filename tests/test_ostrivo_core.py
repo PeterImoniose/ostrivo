@@ -21,6 +21,7 @@ from ostrivo_core import (
     concentration_risk_analysis, control_chart_analysis,
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
+    convert_column_types, detect_and_convert_numeric_column, detect_and_convert_boolean_column,
 )
 
 
@@ -241,6 +242,93 @@ def test_clean_data_parses_date_column():
     df = pd.DataFrame({"date": ["2026-01-01", "2026-01-02", "2026-01-03"], "val": [1, 2, 3]})
     cleaned, report = clean_data(df)
     assert pd.api.types.is_datetime64_any_dtype(cleaned["date"])
+
+
+# ── detect_and_convert_numeric_column ────────────────────────────────────────
+
+def test_detect_and_convert_numeric_column_currency_symbol():
+    series = pd.Series(["$1,200.50", "$980", "$1,050.25"])
+    result, currency, is_percent = detect_and_convert_numeric_column(series)
+    assert result.tolist() == [1200.50, 980.0, 1050.25]
+    assert currency == 'USD'
+    assert is_percent is False
+
+
+def test_detect_and_convert_numeric_column_currency_word():
+    series = pd.Series(["45,000 Naira", "12,000 Naira", "8,500 Naira"])
+    result, currency, is_percent = detect_and_convert_numeric_column(series)
+    assert result.tolist() == [45000.0, 12000.0, 8500.0]
+    assert currency == 'NGN'
+
+
+def test_detect_and_convert_numeric_column_percent():
+    series = pd.Series(["45%", "12%", "99%"])
+    result, currency, is_percent = detect_and_convert_numeric_column(series)
+    assert result.tolist() == [45.0, 12.0, 99.0]
+    assert is_percent is True
+    assert currency is None
+
+
+def test_detect_and_convert_numeric_column_accounting_negative():
+    series = pd.Series(["1,200", "(500)", "300"])
+    result, currency, is_percent = detect_and_convert_numeric_column(series)
+    assert result.tolist() == [1200.0, -500.0, 300.0]
+
+
+def test_detect_and_convert_numeric_column_rejects_free_text():
+    series = pd.Series(["north", "south", "east"])
+    result, currency, is_percent = detect_and_convert_numeric_column(series)
+    assert result is None
+    assert currency is None
+
+
+# ── detect_and_convert_boolean_column ────────────────────────────────────────
+
+def test_detect_and_convert_boolean_column_yes_no():
+    series = pd.Series(["Yes", "No", "Yes", "No"])
+    result = detect_and_convert_boolean_column(series)
+    assert result.tolist() == [True, False, True, False]
+    assert str(result.dtype) == 'boolean'
+
+
+def test_detect_and_convert_boolean_column_rejects_non_boolean_text():
+    series = pd.Series(["north", "south", "north"])
+    assert detect_and_convert_boolean_column(series) is None
+
+
+def test_detect_and_convert_boolean_column_rejects_single_value():
+    series = pd.Series(["Yes", "Yes", "Yes"])
+    assert detect_and_convert_boolean_column(series) is None
+
+
+# ── convert_column_types / clean_data integration ────────────────────────────
+
+def test_convert_column_types_renames_currency_column():
+    df = pd.DataFrame({"revenue": ["$1,200", "$980", "$1,050"]})
+    converted, report = convert_column_types(df)
+    assert "revenue (USD)" in converted.columns
+    assert pd.api.types.is_numeric_dtype(converted["revenue (USD)"])
+    assert report['currency_columns_converted'] == {'revenue': 'revenue (USD)'}
+
+
+def test_convert_column_types_converts_boolean_column():
+    df = pd.DataFrame({"in_stock": ["Yes", "No", "Yes"]})
+    converted, report = convert_column_types(df)
+    assert str(converted["in_stock"].dtype) == 'boolean'
+    assert report['boolean_columns_converted'] == ['in_stock']
+
+
+def test_clean_data_converts_currency_and_boolean_columns():
+    df = pd.DataFrame({
+        "price": ["$10.50", "$20.00", None, "$15.25"],
+        "readmitted": ["Yes", "No", "No", "Yes"],
+    })
+    cleaned, report = clean_data(df)
+    assert pd.api.types.is_numeric_dtype(cleaned["price (USD)"])
+    assert cleaned["price (USD)"].isnull().sum() == 0
+    assert str(cleaned["readmitted"].dtype) == 'boolean'
+    assert report['currency_columns_converted'] == {'price': 'price (USD)'}
+    assert report['boolean_columns_converted'] == ['readmitted']
 
 
 # ── detect_anomalies ─────────────────────────────────────────────────────────

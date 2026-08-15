@@ -128,6 +128,146 @@ def rank_excel_sheets(sheets):
     return scored
 
 
+CURRENCY_SYMBOL_MAP = {
+    '$': 'USD', '£': 'GBP', '€': 'EUR', '₦': 'NGN', '¥': 'JPY', '₹': 'INR',
+}
+
+CURRENCY_WORD_MAP = {
+    'us dollars': 'USD', 'dollars': 'USD', 'dollar': 'USD', 'usd': 'USD',
+    'pounds sterling': 'GBP', 'pounds': 'GBP', 'pound': 'GBP', 'sterling': 'GBP', 'gbp': 'GBP',
+    'euros': 'EUR', 'euro': 'EUR', 'eur': 'EUR',
+    'naira': 'NGN', 'ngn': 'NGN',
+    'yen': 'JPY', 'jpy': 'JPY',
+    'rupees': 'INR', 'rupee': 'INR', 'inr': 'INR',
+}
+_CURRENCY_WORDS_BY_LENGTH = sorted(CURRENCY_WORD_MAP.keys(), key=len, reverse=True)
+
+BOOLEAN_VALUE_MAP = {
+    'yes': True, 'no': False,
+    'true': True, 'false': False,
+    'y': True, 'n': False,
+    't': True, 'f': False,
+}
+
+
+def _clean_numeric_string(value):
+    """Strip a currency symbol or currency word, thousands separators, percent signs, and
+    accounting-style parentheses (e.g. "(1,200)" for -1200) from a value so it can be parsed
+    as a plain number. Returns (cleaned_string_or_None, currency_code_or_None, is_percent)."""
+    s = str(value).strip()
+    if s == '' or s.lower() in ('nan', 'none', 'n/a', 'na', '-'):
+        return None, None, False
+
+    currency = None
+    for symbol, code in CURRENCY_SYMBOL_MAP.items():
+        if symbol in s:
+            currency = code
+            s = s.replace(symbol, '')
+            break
+
+    if currency is None:
+        lower = s.lower()
+        for word in _CURRENCY_WORDS_BY_LENGTH:
+            if re.search(r'\b' + re.escape(word) + r'\b', lower):
+                currency = CURRENCY_WORD_MAP[word]
+                s = re.sub(r'\b' + re.escape(word) + r'\b', '', s, flags=re.IGNORECASE)
+                break
+
+    is_percent = '%' in s
+    s = s.replace('%', '').replace(',', '').strip()
+
+    if s.startswith('(') and s.endswith(')'):
+        s = '-' + s[1:-1].strip()
+
+    return (s if s not in ('', '-') else None), currency, is_percent
+
+
+def detect_and_convert_numeric_column(series):
+    """Try to convert a text column of numbers - possibly written with a currency symbol or
+    word (e.g. "$1,200", "1200 USD", "45,000 Naira"), thousands separators, percent signs, or
+    accounting-style negatives - into a real numeric column, so it can be used in calculations,
+    charts, and ML features instead of being silently excluded as free text. Returns
+    (converted_series_or_None, currency_code_or_None, is_percent); the first element is None
+    unless at least 70% of the non-null values can confidently be parsed as numbers - the same
+    confidence threshold clean_data already uses for date detection."""
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return None, None, False
+
+    parsed = [_clean_numeric_string(v) for v in non_null]
+    numeric_check = pd.to_numeric(pd.Series([p[0] for p in parsed]), errors='coerce')
+    if numeric_check.notna().mean() < 0.7:
+        return None, None, False
+
+    currencies = {p[1] for p in parsed if p[1]}
+    is_percent = any(p[2] for p in parsed)
+    currency_code = currencies.pop() if len(currencies) == 1 else None
+
+    full_cleaned = series.apply(lambda v: _clean_numeric_string(v)[0] if pd.notna(v) else None)
+    result = pd.to_numeric(full_cleaned, errors='coerce')
+    return result, currency_code, is_percent
+
+
+def detect_and_convert_boolean_column(series):
+    """Try to convert a text column of yes/no, true/false, or y/n style values into pandas'
+    nullable boolean dtype, so it's usable directly in filters, counts, and category pickers
+    instead of staying free text. Returns None if the values don't map cleanly onto one of
+    those known pairs, or if there's only one distinct value (more likely a constant label
+    than an actual flag)."""
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return None
+
+    normalized = non_null.astype(str).str.strip().str.lower()
+    unique_vals = set(normalized.unique())
+    if not unique_vals or not unique_vals.issubset(BOOLEAN_VALUE_MAP.keys()) or len(unique_vals) < 2:
+        return None
+
+    mapped = series.apply(lambda v: BOOLEAN_VALUE_MAP.get(str(v).strip().lower()) if pd.notna(v) else None)
+    return mapped.astype('boolean')
+
+
+def convert_column_types(df):
+    """Scan every text column and, where confident, convert it to a more useful real dtype:
+    yes/no-style text to boolean, and numeric-looking text (including currency symbols/words,
+    thousands separators, percent signs, and accounting-style negatives) to actual numbers.
+    Currency columns are renamed with their detected currency code (e.g. "Revenue" becomes
+    "Revenue (NGN)") and percent columns get a "(%)" suffix, so the unit stays visible after
+    the symbol itself is stripped out. Returns (converted_df, report_dict)."""
+    df = df.copy()
+    currency_cols = {}
+    percent_cols = []
+    boolean_cols = []
+
+    for col in list(df.columns):
+        if df[col].dtype != object:
+            continue
+
+        bool_series = detect_and_convert_boolean_column(df[col])
+        if bool_series is not None:
+            df[col] = bool_series
+            boolean_cols.append(col)
+            continue
+
+        num_series, currency_code, is_percent = detect_and_convert_numeric_column(df[col])
+        if num_series is not None:
+            df[col] = num_series
+            if currency_code:
+                new_name = f"{col} ({currency_code})"
+                df = df.rename(columns={col: new_name})
+                currency_cols[col] = new_name
+            elif is_percent:
+                new_name = f"{col} (%)"
+                df = df.rename(columns={col: new_name})
+                percent_cols.append(new_name)
+
+    return df, {
+        'currency_columns_converted': currency_cols,
+        'percent_columns_converted': percent_cols,
+        'boolean_columns_converted': boolean_cols,
+    }
+
+
 def clean_data(df):
     """Clean and profile a DataFrame."""
     original_shape = df.shape
@@ -142,14 +282,20 @@ def clean_data(df):
     report['duplicates_removed'] = int(dupes)
     df = df.drop_duplicates()
 
+    # Convert numeric-looking and boolean-looking text columns to real dtypes before profiling
+    # missing values, so the report and every downstream fill/analysis sees the true column set.
+    df, type_report = convert_column_types(df)
+    report.update(type_report)
+
     # Missing values
     missing = df.isnull().sum()
     report['missing_by_col'] = missing[missing > 0].to_dict()
     report['total_missing'] = int(missing.sum())
 
-    # Fill numeric missing with median, categorical with mode
+    # Fill numeric missing with median, categorical with mode, boolean with mode
     num_cols = df.select_dtypes(include=[np.number]).columns
     cat_cols = df.select_dtypes(include=['object', 'category']).columns
+    bool_cols = df.select_dtypes(include=['boolean', 'bool']).columns
 
     for col in num_cols:
         if df[col].isnull().any():
@@ -159,6 +305,12 @@ def clean_data(df):
         if df[col].isnull().any():
             mode_val = df[col].mode()
             df[col] = df[col].fillna(mode_val[0] if len(mode_val) > 0 else 'Unknown')
+
+    for col in bool_cols:
+        if df[col].isnull().any():
+            mode_val = df[col].mode()
+            if len(mode_val) > 0:
+                df[col] = df[col].fillna(mode_val[0])
 
     # Try to parse date columns
     for col in cat_cols:
@@ -173,6 +325,7 @@ def clean_data(df):
     report['cleaned_rows'] = len(df)
     report['numeric_cols'] = list(num_cols)
     report['categorical_cols'] = [c for c in cat_cols if c in df.columns]
+    report['boolean_cols'] = list(bool_cols)
 
     return df, report
 
@@ -440,7 +593,7 @@ def suggest_category_and_metric_columns(df):
     """Suggest a default categorical column and numeric column for an industry analysis -
     e.g. the categorical column with a reasonable number of unique values, and the first
     numeric column. Returns (category_col, metric_col), either of which may be None."""
-    cat_cols = [c for c in df.select_dtypes(include=['object', 'category']).columns if not str(c).startswith('_')]
+    cat_cols = [c for c in df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns if not str(c).startswith('_')]
     num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not str(c).startswith('_')]
 
     best_cat = None

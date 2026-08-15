@@ -12,7 +12,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 
 ## ✨ Features
 
-- **Auto data cleaning** - removes duplicates, fills missing values, parses dates
+- **Auto data cleaning** - removes duplicates, fills missing values, parses dates, and detects and converts columns to their correct data type: numbers written with currency symbols or words (e.g. `$1,200`, `45,000 Naira`), thousands separators, percent signs, and accounting-style negatives all become real numeric columns (currency/percent columns are renamed to show the unit, e.g. `Revenue` becomes `Revenue (NGN)`); yes/no-style text becomes a real boolean column - so this data is usable in every chart, KPI, and predictive feature instead of being silently excluded as free text
 - **Smart column labelling** - AI-inferred human-readable labels for cryptic column names (falls back to a heuristic without an API key), with manual override so you can rename any column yourself
 - **Multi-sheet Excel support** - detects workbooks with multiple sheets, ranks them by how likely each is to be real tabular data (vs. notes/instructions/cover pages), and lets you pick which to analyse - with an optional AI opinion when a key is provided
 - **Multi-file analysis** - upload several files at once (e.g. one CSV per month) and Ostrivo combines them into a single dataset, adding a `source_file` column so you can break down charts by file. Handles files with slightly different columns without erroring out.
@@ -37,7 +37,7 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 ## ✅ MVP Status
 
 - [x] File upload (CSV + Excel, including multi-sheet workbooks and multiple files combined)
-- [x] Auto data cleaning (duplicates, missing values, date parsing)
+- [x] Auto data cleaning (duplicates, missing values, date parsing, currency/percent/boolean type detection)
 - [x] AI-powered smart column labelling with manual rename override
 - [x] 5 interactive chart types (histogram, box plot, scatter, heatmap, bar)
 - [x] Isolation Forest anomaly detection

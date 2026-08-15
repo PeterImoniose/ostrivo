@@ -771,7 +771,7 @@ def get_ai_summary(df, clean_report, anomaly_summary, api_key, goal=None, indust
     client = anthropic.Anthropic(api_key=api_key)
 
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns.tolist()
 
     # Build a compact data profile
     profile = {
@@ -844,7 +844,7 @@ def ask_data_question(df, question, api_key, industry=None):
         }
 
     cat_summary = {}
-    for col in df.select_dtypes(include=['object']).columns[:4]:
+    for col in df.select_dtypes(include=['object', 'boolean', 'bool']).columns[:4]:
         cat_summary[col] = df[col].value_counts().head(5).to_dict()
 
     context = {
@@ -1655,7 +1655,7 @@ with tab1:
 with tab2:
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_clean = [c for c in num_cols if not c.startswith('_')]
-    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns.tolist()
 
     if not num_cols_clean:
         st.warning("No numeric columns found for charting.")
@@ -1915,7 +1915,7 @@ with tab5:
         st.caption(f"Tailored for: **{INDUSTRY_OPTIONS[current_industry]}**")
         default_cat, default_num = suggest_category_and_metric_columns(df)
         industry_num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not c.startswith('_')]
-        industry_cat_cols = [c for c in df.select_dtypes(include=['object', 'category']).columns if not c.startswith('_')]
+        industry_cat_cols = [c for c in df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns if not c.startswith('_')]
 
         industry_date_col = detect_date_column(df)
 
