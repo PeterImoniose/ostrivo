@@ -10,3 +10,4 @@ fpdf2>=2.8.8
 xlsxwriter>=3.2.0
 supabase>=2.10.0
 streamlit-cookies-controller>=0.0.4
+matplotlib>=3.9.0

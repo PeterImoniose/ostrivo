@@ -1,3 +1,7 @@
+import matplotlib
+matplotlib.use('Agg')  # headless server - no display backend available
+import matplotlib.pyplot as plt
+
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -1426,6 +1430,78 @@ for _rc in df.columns:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
+# Populated by render_chart() as each chart in this script run gets drawn - by the time the
+# Dashboard Banner tab (declared last) runs, every earlier tab's charts are already in here,
+# since Streamlit executes every tab's code every run regardless of which one is visible.
+CHART_REGISTRY = {}
+
+
+def render_chart(fig, key):
+    """Render a Plotly chart and register it (keyed by its own title) so it can be picked
+    for the Dashboard Banner."""
+    label = fig.layout.title.text if fig.layout.title and fig.layout.title.text else key
+    CHART_REGISTRY[key] = {'label': label, 'fig': fig}
+    st.plotly_chart(fig, use_container_width=True, key=key)
+
+
+def draw_plotly_as_matplotlib(fig, ax):
+    """Redraw a simplified static version of a Plotly figure onto matplotlib axes - used only
+    for the Dashboard Banner's downloadable image. Plotly's own charts are interactive and
+    can't be reliably combined into one static image in this deployment (Kaleido, the usual
+    tool for that, needs either a deprecated legacy version or a runtime Chrome download that
+    isn't reliable on Streamlit Community Cloud's free tier), so this covers the handful of
+    trace types actually used across the app (bar, scatter/line, pie, histogram, heatmap, box)
+    generically rather than needing a bespoke renderer per chart."""
+    for trace in fig.data:
+        ttype = trace.type
+        if ttype == 'bar':
+            x = [str(v) for v in trace.x] if trace.x is not None else []
+            y = list(trace.y) if trace.y is not None else []
+            if getattr(trace, 'orientation', None) == 'h':
+                ax.barh(x, y, color='#3b82f6')
+            else:
+                ax.bar(x, y, color='#3b82f6')
+                ax.tick_params(axis='x', rotation=45)
+        elif ttype == 'scatter':
+            x = list(trace.x) if trace.x is not None else []
+            y = list(trace.y) if trace.y is not None else []
+            mode = trace.mode or ''
+            name = trace.name or ''
+            color = '#dc2626' if 'ut of' in name.lower() else '#3b82f6'
+            if 'markers' in mode and 'lines' not in mode:
+                ax.scatter(x, y, color=color, s=20)
+            else:
+                ax.plot(x, y, color=color, linewidth=1.5)
+        elif ttype == 'pie':
+            values = list(trace.values) if trace.values is not None else []
+            labels = [str(v) for v in trace.labels] if trace.labels is not None else None
+            if values:
+                ax.pie(values, labels=labels, autopct='%1.0f%%', textprops={'fontsize': 7})
+        elif ttype == 'histogram':
+            x = list(trace.x) if trace.x is not None else []
+            if x:
+                ax.hist(x, bins=25, color='#3b82f6')
+        elif ttype == 'heatmap':
+            if trace.z is not None:
+                ax.imshow(trace.z, cmap='Blues', aspect='auto')
+                if trace.x is not None:
+                    ax.set_xticks(range(len(trace.x)))
+                    ax.set_xticklabels(trace.x, rotation=45, ha='right', fontsize=6)
+                if trace.y is not None:
+                    ax.set_yticks(range(len(trace.y)))
+                    ax.set_yticklabels(trace.y, fontsize=6)
+        elif ttype == 'box':
+            y = list(trace.y) if trace.y is not None else []
+            if y:
+                ax.boxplot(y)
+
+    title = fig.layout.title.text if fig.layout.title and fig.layout.title.text else ""
+    ax.set_title(title, fontsize=9, color='#e7ebf3')
+    ax.tick_params(labelsize=6, colors='#94a3b8')
+    ax.set_facecolor('#161d2e')
+    for spine in ax.spines.values():
+        spine.set_color('#232b3d')
+
 
 def render_forecast_chart(df, date_col, metric_col, col_labels, chart_key, periods=30):
     """Shared trend + seasonality forecast chart, reused by the Forecast tab and any
@@ -1465,13 +1541,13 @@ def render_forecast_chart(df, date_col, metric_col, col_labels, chart_key, perio
         title_font=dict(size=14, color='#64748b'),
         legend=dict(orientation='h', y=-0.25)
     )
-    st.plotly_chart(fig_fc, use_container_width=True, key=chart_key)
+    render_chart(fig_fc, chart_key)
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
     "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "🏭 Industry Insights",
-    "📈 Forecast", "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data"
+    "📈 Forecast", "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data", "🎨 Dashboard Banner"
 ])
 
 # ── Tab 1: Auto-Pilot ─────────────────────────────────────────────────────────
@@ -1567,7 +1643,7 @@ with tab1:
                 font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                 legend=dict(orientation='h', y=-0.25)
             )
-            st.plotly_chart(fig_ap, use_container_width=True, key="chart_autopilot_forecast")
+            render_chart(fig_ap, "chart_autopilot_forecast")
             st.caption(f"{metric_label_ap} shows {'an' if fc_meta['direction'] == 'increasing' else 'a'} "
                        f"{fc_meta['direction']} trend (~{abs(fc_meta['slope']):.2f} per period).")
 
@@ -1605,7 +1681,7 @@ with tab2:
                 title_font=dict(size=14, color='#64748b'),
                 showlegend=False
             )
-            st.plotly_chart(fig, use_container_width=True, key="chart_histogram")
+            render_chart(fig, "chart_histogram")
 
         with col_b:
             fig2 = px.box(
@@ -1620,7 +1696,7 @@ with tab2:
                 font=dict(family='Inter', color='#94a3b8'),
                 title_font=dict(size=14, color='#64748b')
             )
-            st.plotly_chart(fig2, use_container_width=True, key="chart_boxplot")
+            render_chart(fig2, "chart_boxplot")
 
         # Correlation heatmap
         if len(num_cols_clean) >= 2:
@@ -1640,7 +1716,7 @@ with tab2:
                 title_font=dict(size=14, color='#64748b'),
                 height=500
             )
-            st.plotly_chart(fig3, use_container_width=True, key="chart_corr_heatmap")
+            render_chart(fig3, "chart_corr_heatmap")
 
         # Scatter plot
         if len(num_cols_clean) >= 2:
@@ -1671,7 +1747,7 @@ with tab2:
                 font=dict(family='Inter', color='#94a3b8'),
                 title_font=dict(size=14, color='#64748b')
             )
-            st.plotly_chart(fig4, use_container_width=True, key="chart_scatter")
+            render_chart(fig4, "chart_scatter")
 
         # Categorical breakdown
         if cat_cols:
@@ -1694,7 +1770,7 @@ with tab2:
                 title_font=dict(size=14, color='#64748b'),
                 showlegend=False
             )
-            st.plotly_chart(fig5, use_container_width=True, key="chart_category_breakdown")
+            render_chart(fig5, "chart_category_breakdown")
 
         # Descriptive stats table
         st.markdown('<p class="section-title">Descriptive Statistics</p>', unsafe_allow_html=True)
@@ -1755,7 +1831,7 @@ with tab3:
                 font=dict(family='Inter', color='#94a3b8'),
                 title_font=dict(size=14, color='#64748b')
             )
-            st.plotly_chart(fig_a, use_container_width=True, key="chart_anomaly_scatter")
+            render_chart(fig_a, "chart_anomaly_scatter")
 
             # Show anomalous rows
             if anom_count > 0:
@@ -1878,7 +1954,7 @@ with tab5:
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                         showlegend=False
                     )
-                    st.plotly_chart(fig_tp, use_container_width=True, key="chart_top_performers")
+                    render_chart(fig_tp, "chart_top_performers")
                 with sc2:
                     fig_share = px.pie(
                         top_df, names=tp_cat, values='total', hole=0.45,
@@ -1888,7 +1964,7 @@ with tab5:
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                     )
-                    st.plotly_chart(fig_share, use_container_width=True, key="chart_sales_share")
+                    render_chart(fig_share, "chart_sales_share")
 
                 st.dataframe(top_df.rename(columns={tp_cat: col_labels.get(tp_cat, tp_cat), 'total': col_labels.get(tp_metric, tp_metric),
                                                      'share_pct': 'Share %'}), use_container_width=True)
@@ -1904,7 +1980,7 @@ with tab5:
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                     )
-                    st.plotly_chart(fig_sales_trend, use_container_width=True, key="chart_sales_trend")
+                    render_chart(fig_sales_trend, "chart_sales_trend")
 
                 st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
                 st.info(
@@ -1936,7 +2012,7 @@ with tab5:
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                         showlegend=False
                     )
-                    st.plotly_chart(fig_seg, use_container_width=True, key="chart_sales_segments")
+                    render_chart(fig_seg, "chart_sales_segments")
                     st.caption("Average values per segment - use these to tell segments apart "
                                "(e.g. 'high revenue, low volume').")
                     st.dataframe(
@@ -1995,7 +2071,7 @@ with tab5:
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                         showlegend=False
                     )
-                    st.plotly_chart(fig_cr, use_container_width=True, key="chart_concentration_risk")
+                    render_chart(fig_cr, "chart_concentration_risk")
                 with fc2:
                     fig_cr_pie = px.pie(
                         cr_result['breakdown'].head(15), names=cr_cat, values='total', hole=0.45,
@@ -2005,7 +2081,7 @@ with tab5:
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                     )
-                    st.plotly_chart(fig_cr_pie, use_container_width=True, key="chart_finance_share")
+                    render_chart(fig_cr_pie, "chart_finance_share")
 
                 if industry_date_col:
                     finance_trend = time_trend_analysis(df, industry_date_col, cr_amount)
@@ -2018,7 +2094,7 @@ with tab5:
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                     )
-                    st.plotly_chart(fig_finance_trend, use_container_width=True, key="chart_finance_trend")
+                    render_chart(fig_finance_trend, "chart_finance_trend")
 
                 st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
                 st.info(
@@ -2086,13 +2162,13 @@ with tab5:
                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                     font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                 )
-                st.plotly_chart(fig_cc, use_container_width=True, key="chart_control_chart")
+                render_chart(fig_cc, "chart_control_chart")
                 st.caption("Control limits are mean +/- 3 standard deviations, standard SPC (X-chart) methodology. "
                            "Points outside the red lines may indicate a process control issue worth investigating.")
 
                 fig_hist = px.histogram(
                     points_df, x=cc_metric, nbins=30,
-                    title=f"Distribution of {col_labels.get(cc_metric, cc_metric)}",
+                    title=f"Process Distribution - {col_labels.get(cc_metric, cc_metric)}",
                     labels={cc_metric: col_labels.get(cc_metric, cc_metric)}
                 )
                 fig_hist.add_vline(x=cc_result['mean'], line_dash='solid', line_color='#16a34a', annotation_text='Mean')
@@ -2101,7 +2177,7 @@ with tab5:
                     font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                     showlegend=False
                 )
-                st.plotly_chart(fig_hist, use_container_width=True, key="chart_measurement_distribution")
+                render_chart(fig_hist, "chart_measurement_distribution")
 
                 st.markdown('<p class="section-title">Predictive Insights</p>', unsafe_allow_html=True)
                 st.info(
@@ -2163,7 +2239,7 @@ with tab5:
                     font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                     showlegend=False
                 )
-                st.plotly_chart(fig_hc, use_container_width=True, key="chart_healthcare_volume")
+                render_chart(fig_hc, "chart_healthcare_volume")
 
                 if industry_date_col:
                     hc_trend = time_trend_analysis(df, industry_date_col, hc_metric)
@@ -2176,7 +2252,7 @@ with tab5:
                         plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                         font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                     )
-                    st.plotly_chart(fig_hc_trend, use_container_width=True, key="chart_healthcare_trend")
+                    render_chart(fig_hc_trend, "chart_healthcare_trend")
 
                 st.markdown('<p class="section-title">Process Monitoring</p>', unsafe_allow_html=True)
                 st.caption("Track a continuous metric like wait time or length of stay for out-of-range signals - "
@@ -2209,7 +2285,7 @@ with tab5:
                     plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                     font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
                 )
-                st.plotly_chart(fig_hc_cc, use_container_width=True, key="chart_healthcare_control")
+                render_chart(fig_hc_cc, "chart_healthcare_control")
                 st.caption("Control limits are mean +/- 3 standard deviations. Points outside the red lines may "
                            "indicate a capacity or care-quality issue worth investigating - not a clinical diagnosis.")
 
@@ -2267,7 +2343,7 @@ with tab5:
                                 font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b'),
                                 showlegend=False
                             )
-                            st.plotly_chart(fig_hc_importance, use_container_width=True, key="chart_healthcare_risk_importance")
+                            render_chart(fig_hc_importance, "chart_healthcare_risk_importance")
 
                             hc_scored_rename = {c: col_labels.get(c, c) for c in hc_risk_features}
                             hc_scored_rename[hc_outcome_col] = col_labels.get(hc_outcome_col, hc_outcome_col)
@@ -2336,7 +2412,7 @@ with tab6:
                 title_font=dict(size=14, color='#64748b'),
                 legend=dict(orientation='h', y=-0.25)
             )
-            st.plotly_chart(fig_fc, use_container_width=True, key="chart_forecast")
+            render_chart(fig_fc, "chart_forecast")
 
             st.markdown(f"""
             <div class="insight-box">
@@ -2487,6 +2563,67 @@ with tab9:
                 st.success(f"Saved as '{save_name}'! Find it in 'My Dashboards' in the sidebar.")
             except Exception as e:
                 st.error(f"Couldn't save: {e}")
+
+# ── Tab 10: Dashboard Banner ────────────────────────────────────────────────────
+with tab10:
+    st.markdown('<p class="section-title">Dashboard Banner</p>', unsafe_allow_html=True)
+    st.caption("Pick charts from anywhere in this analysis to build a custom summary view - "
+               "preview it here, or download it as one shareable image.")
+
+    if not CHART_REGISTRY:
+        st.info("No charts are available yet - upload data and explore the other tabs first, "
+                 "then come back here.")
+    else:
+        banner_keys = list(CHART_REGISTRY.keys())
+        banner_selected = st.multiselect(
+            "Charts to include",
+            banner_keys,
+            format_func=lambda k: CHART_REGISTRY[k]['label'],
+            key="banner_chart_selection"
+        )
+
+        if not banner_selected:
+            st.caption("Select one or more charts above to build your banner.")
+        else:
+            st.markdown('<p class="section-title">Preview</p>', unsafe_allow_html=True)
+            banner_cols = st.columns(2)
+            for i, bkey in enumerate(banner_selected):
+                with banner_cols[i % 2]:
+                    st.plotly_chart(CHART_REGISTRY[bkey]['fig'], use_container_width=True, key=f"banner_preview_{bkey}")
+
+            if st.button("🖼️ Generate Downloadable Banner", key="generate_banner_btn"):
+                with st.spinner("Building your banner..."):
+                    n = len(banner_selected)
+                    ncols = 2 if n > 1 else 1
+                    nrows = (n + ncols - 1) // ncols
+                    fig_mpl, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4.2 * nrows))
+                    fig_mpl.patch.set_facecolor('#0b0f19')
+                    axes_flat = np.atleast_1d(axes).flatten()
+
+                    for i, bkey in enumerate(banner_selected):
+                        draw_plotly_as_matplotlib(CHART_REGISTRY[bkey]['fig'], axes_flat[i])
+                    for j in range(n, len(axes_flat)):
+                        axes_flat[j].axis('off')
+
+                    fig_mpl.suptitle(f"Ostrivo Dashboard - {display_name}", fontsize=14, color='white', y=1.0)
+                    fig_mpl.tight_layout()
+
+                    banner_buffer = io.BytesIO()
+                    fig_mpl.savefig(banner_buffer, format='png', dpi=150, bbox_inches='tight',
+                                     facecolor=fig_mpl.get_facecolor())
+                    plt.close(fig_mpl)
+                    banner_buffer.seek(0)
+                    st.session_state['banner_image_bytes'] = banner_buffer.getvalue()
+
+            if 'banner_image_bytes' in st.session_state:
+                st.image(st.session_state['banner_image_bytes'], use_container_width=True)
+                st.download_button(
+                    "⬇️ Download Banner (PNG)",
+                    data=st.session_state['banner_image_bytes'],
+                    file_name=f"ostrivo_banner_{display_name.split('.')[0]}.png",
+                    mime="image/png",
+                    key="download_banner_btn"
+                )
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""

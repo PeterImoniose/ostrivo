@@ -29,7 +29,8 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - **Help assistant** - a sidebar AI chatbot that answers questions about using Ostrivo itself (separate from the data Q&A)
 - **Admin console** - password-gated view (`?admin=1`) with usage stats, estimated AI cost, and an activity log
 - **User accounts** (optional, requires Supabase setup) - sign up / log in, save an analysis, and reload it later from "My Dashboards." Each user's saved analyses are private, enforced by Postgres Row Level Security, not just app-level checks. Session persists across page reloads via a cookie. If Supabase isn't configured, Ostrivo runs exactly as before, no login required.
-- **Industry-specific analysis** - pick your industry once (Sales & Retail, Finance & Banking, or Engineering & Manufacturing) and Ostrivo tailors both the AI narrative and a dedicated "Industry Insights" tab to it: Top Performers ranking for Sales & Retail, a Concentration Risk (HHI) breakdown for Finance & Banking, and a Process Control Chart (SPC/X-chart) for Engineering & Manufacturing. Change your industry anytime from the sidebar.
+- **Industry-specific analysis** - pick your industry once (Sales & Retail, Finance & Banking, Engineering & Manufacturing, or Healthcare) and Ostrivo tailors both the AI narrative and a dedicated "Industry Insights" tab to it, including a Predictive Insights section per industry (segmentation, fraud-risk flagging, time-to-limit estimates, forecasts, and a readmission/outcome risk model). Change your industry anytime from the sidebar.
+- **Dashboard Banner** - build a custom summary view by picking any chart from anywhere in the analysis (Dashboard, Anomalies, Industry Insights, Forecast), preview it together, then download it as one shareable PNG image.
 
 ---
 
@@ -51,7 +52,8 @@ Ostrivo is an AI-powered business intelligence web app that transforms raw CSV a
 - [x] Sidebar help assistant
 - [x] Password-gated admin console
 - [x] Optional user accounts with RLS-enforced private saved dashboards
-- [x] Industry-specific analysis (Sales & Retail, Finance & Banking, Engineering & Manufacturing)
+- [x] Industry-specific analysis (Sales & Retail, Finance & Banking, Engineering & Manufacturing, Healthcare) with predictive insights per industry
+- [x] Dashboard Banner - custom chart selection with downloadable PNG export
 - [x] Custom UI styling
 
 ---
@@ -214,8 +216,8 @@ CI runs these tests automatically on every push via GitHub Actions.
 |---|---|
 | Frontend | Streamlit |
 | Data processing | pandas, NumPy |
-| Machine learning | scikit-learn (Isolation Forest) |
-| Visualisation | Plotly |
+| Machine learning | scikit-learn (Isolation Forest, KMeans, Logistic Regression) |
+| Visualisation | Plotly (interactive), matplotlib (static Dashboard Banner export) |
 | AI | Large Language Model API |
 | Statistics | SciPy |
 | Reporting | fpdf2 (PDF export), xlsxwriter (Excel export) |
