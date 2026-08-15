@@ -1450,8 +1450,8 @@ def draw_plotly_as_matplotlib(fig, ax):
     can't be reliably combined into one static image in this deployment (Kaleido, the usual
     tool for that, needs either a deprecated legacy version or a runtime Chrome download that
     isn't reliable on Streamlit Community Cloud's free tier), so this covers the handful of
-    trace types actually used across the app (bar, scatter/line, pie, histogram, heatmap, box)
-    generically rather than needing a bespoke renderer per chart."""
+    trace types actually used across the app (bar, scatter/line, pie, histogram, heatmap, box,
+    violin) generically rather than needing a bespoke renderer per chart."""
     for trace in fig.data:
         ttype = trace.type
         if ttype == 'bar':
@@ -1469,9 +1469,20 @@ def draw_plotly_as_matplotlib(fig, ax):
             name = trace.name or ''
             color = '#dc2626' if 'ut of' in name.lower() else '#3b82f6'
             if 'markers' in mode and 'lines' not in mode:
-                ax.scatter(x, y, color=color, s=20)
+                sizes = 20
+                marker_sizes = getattr(trace.marker, 'size', None) if trace.marker else None
+                if marker_sizes is not None and not isinstance(marker_sizes, (int, float)):
+                    raw_sizes = np.array(marker_sizes, dtype=float)
+                    if raw_sizes.size and raw_sizes.max() > 0:
+                        sizes = 15 + (raw_sizes / raw_sizes.max()) * 60
+                ax.scatter(x, y, color=color, s=sizes)
             else:
                 ax.plot(x, y, color=color, linewidth=1.5)
+        elif ttype == 'violin':
+            y = list(trace.y) if trace.y is not None else []
+            if y:
+                ax.violinplot(y, showmedians=True)
+                ax.set_xticks([])
         elif ttype == 'pie':
             values = list(trace.values) if trace.values is not None else []
             labels = [str(v) for v in trace.labels] if trace.labels is not None else None
@@ -1656,6 +1667,7 @@ with tab2:
     num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
     num_cols_clean = [c for c in num_cols if not c.startswith('_')]
     cat_cols = df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns.tolist()
+    dash_date_col = detect_date_column(df)
 
     if not num_cols_clean:
         st.warning("No numeric columns found for charting.")
@@ -1684,19 +1696,54 @@ with tab2:
             render_chart(fig, "chart_histogram")
 
         with col_b:
-            fig2 = px.box(
-                df, y=col_select,
-                title=f"Box Plot - {col_labels.get(col_select, col_select)}",
-                labels=col_labels,
-                color_discrete_sequence=["#0f4c81"]
-            )
+            dist_chart_type = st.selectbox("Chart type", ["Box Plot", "Violin Plot"], key="dist_chart_type")
+            if dist_chart_type == "Box Plot":
+                fig2 = px.box(
+                    df, y=col_select,
+                    title=f"Box Plot - {col_labels.get(col_select, col_select)}",
+                    labels=col_labels,
+                    color_discrete_sequence=["#0f4c81"]
+                )
+                dist_chart_key = "chart_boxplot"
+            else:
+                fig2 = px.violin(
+                    df, y=col_select, box=True, points=False,
+                    title=f"Violin Plot - {col_labels.get(col_select, col_select)}",
+                    labels=col_labels,
+                    color_discrete_sequence=["#0f4c81"]
+                )
+                dist_chart_key = "chart_violin"
             fig2.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(family='Inter', color='#94a3b8'),
                 title_font=dict(size=14, color='#64748b')
             )
-            render_chart(fig2, "chart_boxplot")
+            render_chart(fig2, dist_chart_key)
+
+        # Trend over time
+        if dash_date_col:
+            st.markdown('<p class="section-title">Trend Over Time</p>', unsafe_allow_html=True)
+            trend_metric = st.selectbox(
+                "Metric to trend", num_cols_clean,
+                index=num_cols_clean.index(col_select) if col_select in num_cols_clean else 0,
+                format_func=lambda c: col_labels.get(c, c), key="dash_trend_metric"
+            )
+            trend_df = time_trend_analysis(df, dash_date_col, trend_metric)
+            fig_trend = px.line(
+                trend_df, x='period', y='total',
+                title=f"{col_labels.get(trend_metric, trend_metric)} Over Time",
+                markers=True,
+                color_discrete_sequence=["#0284c7"]
+            )
+            fig_trend.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)',
+                paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(family='Inter', color='#94a3b8'),
+                title_font=dict(size=14, color='#64748b'),
+                showlegend=False
+            )
+            render_chart(fig_trend, "chart_trend_over_time")
 
         # Correlation heatmap
         if len(num_cols_clean) >= 2:
@@ -1721,13 +1768,18 @@ with tab2:
         # Scatter plot
         if len(num_cols_clean) >= 2:
             st.markdown('<p class="section-title">Scatter Explorer</p>', unsafe_allow_html=True)
-            sc1, sc2 = st.columns(2)
+            sc1, sc2, sc3 = st.columns(3)
             with sc1:
                 x_col = st.selectbox("X axis", num_cols_clean, index=0,
                                       format_func=lambda c: col_labels.get(c, c))
             with sc2:
                 y_col = st.selectbox("Y axis", num_cols_clean, index=min(1, len(num_cols_clean)-1),
                                       format_func=lambda c: col_labels.get(c, c))
+            with sc3:
+                size_col = st.selectbox(
+                    "Bubble size (optional)", ["None"] + num_cols_clean,
+                    format_func=lambda c: "None" if c == "None" else col_labels.get(c, c)
+                )
 
             color_col = None
             if cat_cols:
@@ -1736,6 +1788,7 @@ with tab2:
             fig4 = px.scatter(
                 df, x=x_col, y=y_col,
                 color=color_col,
+                size=None if size_col == "None" else size_col,
                 title=f"{col_labels.get(x_col, x_col)} vs {col_labels.get(y_col, y_col)}",
                 labels=col_labels,
                 opacity=0.7,
@@ -1752,25 +1805,38 @@ with tab2:
         # Categorical breakdown
         if cat_cols:
             st.markdown('<p class="section-title">Category Breakdown</p>', unsafe_allow_html=True)
-            cat_sel = st.selectbox("Select categorical column", cat_cols,
-                                    format_func=lambda c: col_labels.get(c, c))
+            cb1, cb2 = st.columns(2)
+            with cb1:
+                cat_sel = st.selectbox("Select categorical column", cat_cols,
+                                        format_func=lambda c: col_labels.get(c, c))
+            with cb2:
+                cat_chart_type = st.selectbox("Chart type", ["Bar Chart", "Pie Chart"], key="cat_chart_type")
             vc = df[cat_sel].value_counts().head(15).reset_index()
             vc.columns = [cat_sel, 'Count']
-            fig5 = px.bar(
-                vc, x=cat_sel, y='Count',
-                title=f"Top values - {col_labels.get(cat_sel, cat_sel)}",
-                labels=col_labels,
-                color='Count',
-                color_continuous_scale='Blues'
-            )
+            if cat_chart_type == "Bar Chart":
+                fig5 = px.bar(
+                    vc, x=cat_sel, y='Count',
+                    title=f"Top values - {col_labels.get(cat_sel, cat_sel)}",
+                    labels=col_labels,
+                    color='Count',
+                    color_continuous_scale='Blues'
+                )
+                cat_chart_key = "chart_category_breakdown"
+            else:
+                fig5 = px.pie(
+                    vc, names=cat_sel, values='Count', hole=0.45,
+                    title=f"Share - {col_labels.get(cat_sel, cat_sel)}",
+                    color_discrete_sequence=px.colors.qualitative.Set2
+                )
+                cat_chart_key = "chart_category_pie"
             fig5.update_layout(
                 plot_bgcolor='rgba(0,0,0,0)',
                 paper_bgcolor='rgba(0,0,0,0)',
                 font=dict(family='Inter', color='#94a3b8'),
                 title_font=dict(size=14, color='#64748b'),
-                showlegend=False
+                showlegend=(cat_chart_type == "Pie Chart")
             )
-            render_chart(fig5, "chart_category_breakdown")
+            render_chart(fig5, cat_chart_key)
 
         # Descriptive stats table
         st.markdown('<p class="section-title">Descriptive Statistics</p>', unsafe_allow_html=True)
