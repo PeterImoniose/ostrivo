@@ -183,7 +183,7 @@ def detect_anomalies(df):
     if len(num_cols) < 1:
         return df, []
 
-    use_cols = num_cols[:10]  # limit to 10 cols for speed
+    use_cols = num_cols
     X = df[use_cols].copy()
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
