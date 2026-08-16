@@ -73,6 +73,38 @@ def get_current_industry():
     return st.session_state.get('guest_industry')
 
 
+GUEST_ANALYSIS_LIMIT = 7
+
+
+def get_guest_uses():
+    """How many analyses this browser's guest trial has already used. session_state is
+    the source of truth for the running session (updates instantly, so the limit is
+    enforced right away); it's seeded once per session from the persistent cookie, which
+    is the cookie component's own async round-trip and only needs to resolve once, on
+    first read, rather than on every increment."""
+    if 'guest_uses' not in st.session_state:
+        cookie_val = 0
+        if cookie_controller:
+            try:
+                cookie_val = int(cookie_controller.get('ostrivo_guest_uses') or 0)
+            except (TypeError, ValueError):
+                cookie_val = 0
+        st.session_state['guest_uses'] = cookie_val
+    return st.session_state['guest_uses']
+
+
+def increment_guest_uses():
+    """Record one more guest analysis used - updates session_state immediately (so the
+    limit is enforced within the same session, not just after a reload) and persists to
+    a cookie so the count survives a page reload too. No account or database involved,
+    so all of it - the count included - simply disappears once the guest clears cookies
+    or switches browsers."""
+    new_count = get_guest_uses() + 1
+    st.session_state['guest_uses'] = new_count
+    if cookie_controller:
+        cookie_controller.set('ostrivo_guest_uses', str(new_count))
+
+
 def render_verify_screen(pending_email):
     """Show the enter-your-code screen for a pending signup and handle verify/resend/cancel.
     Called both directly after a successful signup (same script run, no rerun needed - avoids
@@ -948,7 +980,10 @@ if supabase_client:
             cookie_controller.remove('ostrivo_access_token')
             cookie_controller.remove('ostrivo_refresh_token')
 
-    if 'auth_user' not in st.session_state:
+    guest_uses = get_guest_uses()
+    guest_active = st.session_state.get('is_guest') and guest_uses < GUEST_ANALYSIS_LIMIT
+
+    if 'auth_user' not in st.session_state and not guest_active:
         st.markdown("""
         <div class="main-header">
             <h1>📊 Ostrivo</h1>
@@ -959,7 +994,7 @@ if supabase_client:
         if 'pending_signup_email' in st.session_state:
             render_verify_screen(st.session_state['pending_signup_email'])
 
-        login_tab, signup_tab = st.tabs(["🔑 Log In", "✨ Sign Up"])
+        login_tab, signup_tab, guest_tab = st.tabs(["🔑 Log In", "✨ Sign Up", "🚀 Try as Guest"])
 
         with login_tab:
             with st.form("login_form"):
@@ -1015,6 +1050,22 @@ if supabase_client:
                         render_verify_screen(signup_email)
                     except Exception as e:
                         st.error(f"Sign up failed: {e}")
+
+        with guest_tab:
+            remaining = GUEST_ANALYSIS_LIMIT - guest_uses
+            if remaining > 0:
+                st.write(
+                    f"Try Ostrivo with your own data, no account needed - "
+                    f"**{remaining} free {'analysis' if remaining == 1 else 'analyses'}** on this browser."
+                )
+                st.caption("Nothing you upload in guest mode is saved anywhere - there's no account "
+                           "to save it to, so it's gone the moment you close the tab.")
+                if st.button("🚀 Start as Guest", key="guest_start_btn"):
+                    st.session_state['is_guest'] = True
+                    st.rerun()
+            else:
+                st.write("You've used all your free guest analyses on this browser.")
+                st.caption("Log in or sign up above to keep going - it's free.")
 
         st.stop()
 
@@ -1083,6 +1134,23 @@ with st.sidebar:
                     if st.button("Cancel", key="cancel_delete_btn"):
                         st.session_state['confirming_delete'] = False
                         st.rerun()
+        st.divider()
+    elif supabase_client and st.session_state.get('is_guest'):
+        remaining = max(GUEST_ANALYSIS_LIMIT - get_guest_uses(), 0)
+        st.markdown("### 🚀 Guest Mode")
+        st.caption(f"{remaining} free {'analysis' if remaining == 1 else 'analyses'} left on this browser. "
+                   "Nothing you upload is saved.")
+        if st.button("Sign Up / Log In", key="guest_to_login_btn"):
+            st.session_state.pop('is_guest', None)
+            st.rerun()
+        st.divider()
+        st.markdown("### 🏭 Industry Focus")
+        st.session_state.setdefault('guest_industry', list(INDUSTRY_OPTIONS.keys())[0])
+        st.session_state['guest_industry'] = st.selectbox(
+            "Tailor analysis to an industry", list(INDUSTRY_OPTIONS.keys()),
+            index=list(INDUSTRY_OPTIONS.keys()).index(st.session_state['guest_industry']),
+            format_func=lambda k: INDUSTRY_OPTIONS[k], key="guest_industry_select"
+        )
         st.divider()
     elif not supabase_client:
         st.markdown("### 🏭 Industry Focus")
@@ -1338,6 +1406,8 @@ else:
                     upload_detail += f" ({len(named_dfs)} files)"
                 log_event("upload", upload_detail)
                 st.session_state['logged_upload'] = display_name
+                if st.session_state.get('is_guest'):
+                    increment_guest_uses()
     except Exception as e:
         log_event("error", "upload failed")
         st.error(f"Error loading file(s): {e}")
