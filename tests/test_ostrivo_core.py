@@ -70,6 +70,16 @@ def test_load_data_unsupported_type():
         load_data(f)
 
 
+def test_load_data_csv_cp1252_currency_symbol():
+    # Byte 0xa3 is the GBP sign in cp1252/latin-1 but is invalid as a UTF-8 start byte -
+    # this is what real UK datasets (e.g. online retail invoices) trip on.
+    content = "item,price\nWidget,\xa310.50\n".encode("cp1252")
+    f = FakeUploadedFile(content, "test.csv")
+    df = load_data(f)
+    assert list(df.columns) == ["item", "price"]
+    assert df.loc[0, "price"] == "\xa310.50"
+
+
 # ── multi-sheet Excel detection ─────────────────────────────────────────────
 
 def _make_multi_sheet_excel():

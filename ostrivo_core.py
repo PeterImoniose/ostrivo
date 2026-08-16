@@ -65,12 +65,26 @@ def combine_dataframes(named_dfs):
     return combined, summary
 
 
+def _read_csv_with_encoding_fallback(uploaded_file):
+    """Read a CSV trying utf-8-sig first, then falling back to cp1252 (covers Windows-authored
+    files with currency symbols like GBP that aren't valid UTF-8). cp1252 accepts any byte
+    sequence so this always succeeds if the file is readable at all."""
+    for encoding in ('utf-8-sig', 'cp1252'):
+        uploaded_file.seek(0)
+        try:
+            return pd.read_csv(uploaded_file, encoding=encoding)
+        except UnicodeDecodeError:
+            continue
+    uploaded_file.seek(0)
+    return pd.read_csv(uploaded_file, encoding='latin-1')
+
+
 def load_data(uploaded_file):
     """Load CSV or Excel file into DataFrame. For multi-sheet Excel files, loads the first sheet only -
     use get_excel_sheet_names/load_excel_sheet for sheet-aware loading."""
     name = uploaded_file.name.lower()
     if name.endswith('.csv'):
-        df = pd.read_csv(uploaded_file)
+        df = _read_csv_with_encoding_fallback(uploaded_file)
     elif name.endswith(('.xlsx', '.xls')):
         df = pd.read_excel(uploaded_file)
     else:
