@@ -312,13 +312,25 @@ def clean_data(df):
             if len(mode_val) > 0:
                 df[col] = df[col].fillna(mode_val[0])
 
-    # Try to parse date columns
+    # Try to parse date columns - try both month-first and day-first interpretations
+    # (e.g. "05-02-2010" is 5 Feb in day-first format but 2 May in month-first) and use
+    # whichever parses a larger share of the column, since day-first dates are the norm
+    # outside the US and pandas defaults to month-first. errors='coerce' (rather than
+    # letting a single bad value raise and abort the whole column) is what actually
+    # makes the 70% tolerance below meaningful, instead of requiring a 100% clean column.
     for col in cat_cols:
         if df[col].dtype == object:
             try:
-                parsed = pd.to_datetime(df[col])
-                if parsed.notna().mean() > 0.7:
-                    df[col] = parsed
+                parsed_default = pd.to_datetime(df[col], errors='coerce')
+                parsed_dayfirst = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
+                default_rate = parsed_default.notna().mean()
+                dayfirst_rate = parsed_dayfirst.notna().mean()
+                best_parsed, best_rate = (
+                    (parsed_dayfirst, dayfirst_rate) if dayfirst_rate > default_rate
+                    else (parsed_default, default_rate)
+                )
+                if best_rate > 0.7:
+                    df[col] = best_parsed
             except Exception:
                 pass
 
@@ -589,23 +601,69 @@ INDUSTRY_OPTIONS = {
 }
 
 
+def _name_tokens(col_name):
+    """Split a column name into lowercase word tokens on any non-alphanumeric character,
+    so name-based heuristics match whole words (e.g. 'id' in "Customer ID") rather than
+    accidental substrings (e.g. 'id' inside "Discount")."""
+    return re.split(r'[^a-z0-9]+', str(col_name).lower())
+
+
+_METRIC_NAME_HINTS_TIER1 = {'sales', 'revenue', 'amount', 'total', 'profit', 'spend', 'balance'}
+_METRIC_NAME_HINTS_TIER2 = {'quantity', 'qty', 'units', 'volume', 'price', 'cost', 'value'}
+_ID_NAME_HINTS = {'id', 'number', 'no', 'code', 'invoice', 'sku', 'reference', 'ref'}
+
+
+def _looks_like_identifier(series, col_name):
+    """Heuristic: a numeric column is probably an identifier rather than a real measure
+    if its name suggests so (invoice/customer/product ID, order number...), or if almost
+    every value is unique - both signal that summing or charting it wouldn't mean
+    anything, even though it happens to be numeric."""
+    if _ID_NAME_HINTS & set(_name_tokens(col_name)):
+        return True
+    non_null = series.dropna()
+    if len(non_null) == 0:
+        return False
+    return non_null.nunique() / len(non_null) > 0.95
+
+
+def _pick_metric_column(df, num_cols):
+    """Prefer a numeric column whose name suggests it's a real measure (revenue, sales,
+    amount...) over just the first numeric column found - which on real data is very
+    often an identifier (an invoice or store number) rather than something worth
+    summing. Monetary/aggregate-style names (revenue, sales, total...) are preferred
+    over per-unit or quantity-style names (price, quantity...) when both are present."""
+    non_id_cols = [c for c in num_cols if not _looks_like_identifier(df[c], c)]
+
+    for hints in (_METRIC_NAME_HINTS_TIER1, _METRIC_NAME_HINTS_TIER2):
+        for c in non_id_cols:
+            if hints & set(_name_tokens(c)):
+                return c
+
+    if non_id_cols:
+        return non_id_cols[0]
+    return num_cols[0] if num_cols else None
+
+
 def suggest_category_and_metric_columns(df):
-    """Suggest a default categorical column and numeric column for an industry analysis -
-    e.g. the categorical column with a reasonable number of unique values, and the first
-    numeric column. Returns (category_col, metric_col), either of which may be None."""
+    """Suggest a default categorical column and numeric column for an industry analysis.
+    The category column prefers the richest option among those with a workable number of
+    distinct values (2-50) rather than just the first one found, so a bare 2-value flag
+    doesn't get chosen over a genuinely descriptive category sitting right next to it.
+    The metric column prefers a name that looks like a real measure (sales, revenue,
+    amount...) over an identifier-like column, even if the identifier is numeric. Returns
+    (category_col, metric_col), either of which may be None."""
     cat_cols = [c for c in df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns if not str(c).startswith('_')]
     num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not str(c).startswith('_')]
 
-    best_cat = None
-    for c in cat_cols:
-        nunique = df[c].nunique()
-        if 2 <= nunique <= 50:
-            best_cat = c
-            break
-    if best_cat is None and cat_cols:
-        best_cat = cat_cols[0]
+    workable_cats = [(c, df[c].nunique()) for c in cat_cols]
+    workable_cats = [(c, n) for c, n in workable_cats if 2 <= n <= 50]
+    if workable_cats:
+        best_cat = max(workable_cats, key=lambda pair: pair[1])[0]
+    else:
+        best_cat = cat_cols[0] if cat_cols else None
 
-    best_num = num_cols[0] if num_cols else None
+    best_num = _pick_metric_column(df, num_cols)
+
     return best_cat, best_num
 
 

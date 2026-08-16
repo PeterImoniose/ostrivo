@@ -244,6 +244,30 @@ def test_clean_data_parses_date_column():
     assert pd.api.types.is_datetime64_any_dtype(cleaned["date"])
 
 
+def test_clean_data_parses_dayfirst_date_column():
+    # "19-02-2020" only makes sense day-first (there's no 19th month) - month-first
+    # parsing fails on it entirely, so day-first has to be tried and preferred.
+    df = pd.DataFrame({
+        "date": ["05-02-2020", "12-02-2020", "19-02-2020", "26-02-2020"],
+        "val": [1, 2, 3, 4],
+    })
+    cleaned, report = clean_data(df)
+    assert pd.api.types.is_datetime64_any_dtype(cleaned["date"])
+    assert cleaned["date"].iloc[0] == pd.Timestamp("2020-02-05")
+    assert cleaned["date"].iloc[2] == pd.Timestamp("2020-02-19")
+
+
+def test_clean_data_date_column_tolerates_partial_garbage():
+    # 8/10 valid dates (80%, above the 70% threshold) with 2 genuinely unparseable
+    # values - should still convert, with NaT for the bad ones, rather than a single
+    # bad value silently blocking conversion for the whole column.
+    dates = [f"2026-01-{i:02d}" for i in range(1, 9)] + ["not a date", "also not a date"]
+    df = pd.DataFrame({"date": dates, "val": range(10)})
+    cleaned, report = clean_data(df)
+    assert pd.api.types.is_datetime64_any_dtype(cleaned["date"])
+    assert cleaned["date"].isna().sum() == 2
+
+
 # ── detect_and_convert_numeric_column ────────────────────────────────────────
 
 def test_detect_and_convert_numeric_column_currency_symbol():
@@ -541,6 +565,29 @@ def test_suggest_category_and_metric_columns_no_numeric():
     cat, num = suggest_category_and_metric_columns(df)
     assert cat == "region"
     assert num is None
+
+
+def test_suggest_category_and_metric_columns_prefers_measure_name_over_id():
+    # "invoice_id" comes first and is near-unique (a real ID), but "revenue" is the
+    # column actually worth summing/charting.
+    df = pd.DataFrame({
+        "invoice_id": range(1000, 1020),
+        "revenue": [50.0] * 20,
+    })
+    cat, num = suggest_category_and_metric_columns(df)
+    assert num == "revenue"
+
+
+def test_suggest_category_and_metric_columns_prefers_richer_category():
+    # "is_holiday" (2 values) comes first, but "store_type" (3 values) is more
+    # informative for a category breakdown - it should be preferred.
+    df = pd.DataFrame({
+        "is_holiday": [True, False] * 10,
+        "store_type": (["A", "B", "C"] * 7)[:20],
+        "sales": range(20),
+    })
+    cat, num = suggest_category_and_metric_columns(df)
+    assert cat == "store_type"
 
 
 # ── top_performers_analysis (Sales & Retail) ─────────────────────────────────
