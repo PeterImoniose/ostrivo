@@ -1377,6 +1377,18 @@ else:
         else:
             raw_df, combine_summary = combine_dataframes(named_dfs)
 
+        # No caps on rows/columns/compute time - accuracy over speed. But the free hosting
+        # tier has a real, shared memory ceiling, so a genuinely huge upload can occasionally
+        # fail there. This is just a heads-up, not a limit: the file is still analysed in full.
+        total_upload_bytes = sum(f.size for f in uploaded_files)
+        if len(raw_df) > 500_000 or total_upload_bytes > 50 * 1024 * 1024:
+            st.info(
+                f"📦 Large upload - **{len(raw_df):,} rows**, **{total_upload_bytes / (1024 * 1024):.0f} MB**. "
+                "Ostrivo analyses everything in full, nothing is sampled or skipped - but a file this size can "
+                "occasionally hit a memory limit on the free hosting tier. If that happens, try again in a "
+                "minute or split the file into smaller pieces."
+            )
+
         if combine_summary:
             st.markdown('<p class="section-title">Multiple Files Combined</p>', unsafe_allow_html=True)
             st.caption(f"Combined {combine_summary['files_combined']} files into "
