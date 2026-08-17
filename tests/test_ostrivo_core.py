@@ -14,7 +14,7 @@ from ostrivo_core import (
     load_data, clean_data, detect_anomalies, compute_stats, detect_date_column,
     generate_forecast, pick_forecast_metric, humanize_column_name,
     get_data_quality_scores, get_heuristic_recommendations,
-    _pdf_safe, generate_pdf_report, generate_excel_report,
+    _pdf_safe, generate_pdf_report, generate_excel_report, _write_df_to_excel,
     is_excel_file, get_excel_sheet_names, load_excel_sheet,
     score_sheet_as_data, rank_excel_sheets, combine_dataframes, json_safe,
     suggest_category_and_metric_columns, top_performers_analysis,
@@ -566,6 +566,20 @@ def test_generate_excel_report_with_anomalies_sheet():
     anom_df = display_df[display_df['revenue'] > 1000]
     excel_bytes = generate_excel_report(display_df, None, anom_df, col_labels={})
     assert excel_bytes.startswith(b'PK')
+
+
+def test_write_df_to_excel_splits_across_sheets_when_over_row_limit():
+    # Excel caps a sheet at 1,048,576 rows including the header - real datasets can exceed
+    # that (a 1M+-row guest-mode upload triggered exactly this in production). No row should
+    # be dropped; the data should just spill onto additional sheets instead.
+    df = pd.DataFrame({"value": range(10)})
+    buffer = io.BytesIO()
+    with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
+        _write_df_to_excel(writer, df, 'Data', index=False, max_rows=4)
+    buffer.seek(0)
+    sheets = pd.read_excel(buffer, sheet_name=None)
+    assert list(sheets.keys()) == ['Data', 'Data 2', 'Data 3']
+    assert sorted(pd.concat(sheets.values())['value'].tolist()) == list(range(10))
 
 
 # ── suggest_category_and_metric_columns ──────────────────────────────────────

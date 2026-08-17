@@ -2,6 +2,7 @@
 so it can be unit tested directly (see tests/test_ostrivo_core.py)."""
 
 import io
+import math
 import re
 
 import numpy as np
@@ -625,16 +626,33 @@ def generate_pdf_report(filename, clean_report, quality_scores, anomaly_summary,
     return bytes(pdf.output())
 
 
+_EXCEL_MAX_ROWS_PER_SHEET = 1_048_575  # Excel's hard limit is 1,048,576 rows including the header
+
+
+def _write_df_to_excel(writer, df, base_sheet_name, index=False, max_rows=_EXCEL_MAX_ROWS_PER_SHEET):
+    """Write a DataFrame to one or more sheets, splitting across sheets (base name, base name 2,
+    ...) whenever it exceeds Excel's per-sheet row limit - a real .xlsx format constraint, not a
+    tunable cap, so large datasets are exported in full rather than silently truncated."""
+    if len(df) <= max_rows:
+        df.to_excel(writer, sheet_name=base_sheet_name, index=index)
+        return
+    n_chunks = math.ceil(len(df) / max_rows)
+    for i in range(n_chunks):
+        chunk = df.iloc[i * max_rows:(i + 1) * max_rows]
+        sheet_name = (base_sheet_name if i == 0 else f"{base_sheet_name} {i + 1}")[:31]
+        chunk.to_excel(writer, sheet_name=sheet_name, index=index)
+
+
 def generate_excel_report(display_df, stats_df, anom_df, col_labels):
     """Build a multi-sheet Excel workbook (cleaned data, stats, anomalies) that imports
     cleanly into Power BI via Get Data -> Excel Workbook."""
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-        display_df.rename(columns=col_labels).to_excel(writer, sheet_name='Cleaned Data', index=False)
+        _write_df_to_excel(writer, display_df.rename(columns=col_labels), 'Cleaned Data', index=False)
         if stats_df is not None:
-            stats_df.rename(columns=col_labels).to_excel(writer, sheet_name='Descriptive Stats')
+            _write_df_to_excel(writer, stats_df.rename(columns=col_labels), 'Descriptive Stats', index=True)
         if anom_df is not None and not anom_df.empty:
-            anom_df.rename(columns=col_labels).to_excel(writer, sheet_name='Anomalies', index=False)
+            _write_df_to_excel(writer, anom_df.rename(columns=col_labels), 'Anomalies', index=False)
     return buffer.getvalue()
 
 
