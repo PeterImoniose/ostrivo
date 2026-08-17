@@ -1396,18 +1396,33 @@ else:
                 for note in sheet_choice_notes:
                     st.caption(f"- {note}")
 
-        with st.spinner("Cleaning your data..."):
-            df, clean_report = clean_data(raw_df)
-            df, anomaly_summary = detect_anomalies(df)
-            if st.session_state.get('logged_upload') != display_name:
-                # Deliberately no filename or data content logged here - only anonymous shape/counts.
-                upload_detail = f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols"
-                if len(named_dfs) > 1:
-                    upload_detail += f" ({len(named_dfs)} files)"
-                log_event("upload", upload_detail)
-                st.session_state['logged_upload'] = display_name
-                if st.session_state.get('is_guest'):
-                    increment_guest_uses()
+        # clean_data/detect_anomalies are expensive (e.g. two full date-parsing passes per
+        # column) and re-running them on every widget interaction - not just on new uploads -
+        # was spiking memory/CPU on large files. Cache the result and only redo the work when
+        # the underlying data actually changes.
+        upload_fingerprint = f"{display_name}|{raw_df.shape}|{'|'.join(map(str, raw_df.columns))}"
+        cached_result = st.session_state.get('processed_result')
+        if st.session_state.get('processed_upload_fingerprint') == upload_fingerprint and cached_result is not None:
+            df = cached_result['df']
+            clean_report = cached_result['clean_report']
+            anomaly_summary = cached_result['anomaly_summary']
+        else:
+            with st.spinner("Cleaning your data..."):
+                df, clean_report = clean_data(raw_df)
+                df, anomaly_summary = detect_anomalies(df)
+            st.session_state['processed_result'] = {
+                'df': df, 'clean_report': clean_report, 'anomaly_summary': anomaly_summary,
+            }
+            st.session_state['processed_upload_fingerprint'] = upload_fingerprint
+
+            # Deliberately no filename or data content logged here - only anonymous shape/counts.
+            upload_detail = f"{clean_report['cleaned_rows']} rows x {clean_report['original_cols']} cols"
+            if len(named_dfs) > 1:
+                upload_detail += f" ({len(named_dfs)} files)"
+            log_event("upload", upload_detail)
+            st.session_state['logged_upload'] = display_name
+            if st.session_state.get('is_guest'):
+                increment_guest_uses()
     except Exception as e:
         log_event("error", "upload failed")
         st.error(f"Error loading file(s): {e}")

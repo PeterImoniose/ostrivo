@@ -155,6 +155,14 @@ CURRENCY_WORD_MAP = {
     'rupees': 'INR', 'rupee': 'INR', 'inr': 'INR',
 }
 _CURRENCY_WORDS_BY_LENGTH = sorted(CURRENCY_WORD_MAP.keys(), key=len, reverse=True)
+# Precompiled once at import time - building these (re.escape + pattern compile) fresh for every
+# cell of every candidate column was the dominant cost on large datasets (profiled at 95% of
+# clean_data's runtime on a 540k-row file), since re.search/re.sub take a raw pattern string
+# and have to re-derive the same compiled pattern from it on every single call.
+_CURRENCY_WORD_PATTERNS = [
+    (re.compile(r'\b' + re.escape(word) + r'\b', re.IGNORECASE), CURRENCY_WORD_MAP[word])
+    for word in _CURRENCY_WORDS_BY_LENGTH
+]
 
 BOOLEAN_VALUE_MAP = {
     'yes': True, 'no': False,
@@ -179,12 +187,13 @@ def _clean_numeric_string(value):
             s = s.replace(symbol, '')
             break
 
-    if currency is None:
-        lower = s.lower()
-        for word in _CURRENCY_WORDS_BY_LENGTH:
-            if re.search(r'\b' + re.escape(word) + r'\b', lower):
-                currency = CURRENCY_WORD_MAP[word]
-                s = re.sub(r'\b' + re.escape(word) + r'\b', '', s, flags=re.IGNORECASE)
+    # Plain numeric values (the overwhelming majority in a real numeric/currency column) have
+    # no letters at all, so skip the word-matching loop entirely for them.
+    if currency is None and any(c.isalpha() for c in s):
+        for pattern, code in _CURRENCY_WORD_PATTERNS:
+            if pattern.search(s):
+                currency = code
+                s = pattern.sub('', s)
                 break
 
     is_percent = '%' in s
@@ -206,6 +215,14 @@ def detect_and_convert_numeric_column(series):
     confidence threshold clean_data already uses for date detection."""
     non_null = series.dropna()
     if len(non_null) == 0:
+        return None, None, False
+
+    # Screen on a sample first - regex-cleaning every value is expensive on large free-text
+    # columns (e.g. product descriptions) that were never going to qualify anyway.
+    sample = non_null if len(non_null) <= 500 else non_null.sample(500, random_state=0)
+    sample_parsed = [_clean_numeric_string(v) for v in sample]
+    sample_check = pd.to_numeric(pd.Series([p[0] for p in sample_parsed]), errors='coerce')
+    if sample_check.notna().mean() < 0.7:
         return None, None, False
 
     parsed = [_clean_numeric_string(v) for v in non_null]
@@ -261,6 +278,14 @@ def convert_column_types(df):
         if bool_series is not None:
             df[col] = bool_series
             boolean_cols.append(col)
+            continue
+
+        # Skip identifier-named columns (invoice/order/reference numbers, SKUs...) - these are
+        # frequently mostly-numeric-looking (e.g. "536365", but also "C536379" for a cancelled
+        # order, or "85123A" for a product code) and converting them to a real numeric dtype
+        # would silently turn every non-numeric variant into NaN, destroying real information -
+        # as well as wasting a full-column regex pass on a column that was never a measure.
+        if _ID_NAME_HINTS & set(_name_tokens(col)):
             continue
 
         num_series, currency_code, is_percent = detect_and_convert_numeric_column(df[col])
@@ -335,16 +360,21 @@ def clean_data(df):
     for col in cat_cols:
         if df[col].dtype == object:
             try:
-                parsed_default = pd.to_datetime(df[col], errors='coerce')
-                parsed_dayfirst = pd.to_datetime(df[col], errors='coerce', dayfirst=True)
-                default_rate = parsed_default.notna().mean()
-                dayfirst_rate = parsed_dayfirst.notna().mean()
-                best_parsed, best_rate = (
-                    (parsed_dayfirst, dayfirst_rate) if dayfirst_rate > default_rate
-                    else (parsed_default, default_rate)
-                )
-                if best_rate > 0.7:
-                    df[col] = best_parsed
+                non_null = df[col].dropna()
+                if len(non_null) == 0:
+                    continue
+                # Decide format (and whether this is even a date column) on a sample first -
+                # pandas falls back to a slow per-row dateutil parse when it can't infer a
+                # single format, which is expensive to run twice over a full free-text column
+                # (e.g. a product description field) that was never going to qualify anyway.
+                sample = non_null if len(non_null) <= 200 else non_null.sample(200, random_state=0)
+                sample_default_rate = pd.to_datetime(sample, errors='coerce').notna().mean()
+                sample_dayfirst_rate = pd.to_datetime(sample, errors='coerce', dayfirst=True).notna().mean()
+                use_dayfirst = sample_dayfirst_rate > sample_default_rate
+                if max(sample_default_rate, sample_dayfirst_rate) > 0.7:
+                    parsed = pd.to_datetime(df[col], errors='coerce', dayfirst=use_dayfirst)
+                    if parsed.notna().mean() > 0.7:
+                        df[col] = parsed
             except Exception:
                 pass
 
@@ -367,7 +397,10 @@ def detect_anomalies(df):
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
 
-    model = IsolationForest(contamination=0.05, random_state=42, n_jobs=-1)
+    # n_jobs=1: on constrained deployment containers (e.g. Streamlit Community Cloud's
+    # fractional-CPU tier) joblib's process-based parallelism pickles a full copy of the
+    # scaled data into each worker process, multiplying peak memory for little real speedup.
+    model = IsolationForest(contamination=0.05, random_state=42, n_jobs=1)
     preds = model.fit_predict(X_scaled)
     scores = model.score_samples(X_scaled)
 
@@ -616,10 +649,12 @@ INDUSTRY_OPTIONS = {
 
 
 def _name_tokens(col_name):
-    """Split a column name into lowercase word tokens on any non-alphanumeric character,
-    so name-based heuristics match whole words (e.g. 'id' in "Customer ID") rather than
-    accidental substrings (e.g. 'id' inside "Discount")."""
-    return re.split(r'[^a-z0-9]+', str(col_name).lower())
+    """Split a column name into lowercase word tokens on any non-alphanumeric character or
+    camelCase boundary (so "StockCode" splits into "stock"/"code" just like "Stock Code"
+    would), so name-based heuristics match whole words (e.g. 'id' in "Customer ID") rather
+    than accidental substrings (e.g. 'id' inside "Discount")."""
+    spaced = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', ' ', str(col_name))
+    return re.split(r'[^a-z0-9]+', spaced.lower())
 
 
 _METRIC_NAME_HINTS_TIER1 = {'sales', 'revenue', 'amount', 'total', 'profit', 'spend', 'balance'}

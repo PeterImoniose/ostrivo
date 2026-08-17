@@ -352,6 +352,23 @@ def test_convert_column_types_converts_boolean_column():
     assert report['boolean_columns_converted'] == ['in_stock']
 
 
+def test_convert_column_types_leaves_mostly_numeric_id_column_as_text():
+    # "Invoice" is a real-world example: mostly digits, but a "C" prefix marks cancelled
+    # orders - converting to numeric would silently turn that signal into NaN.
+    df = pd.DataFrame({"Invoice": ["536365", "536366", "536367", "C536379"]})
+    converted, report = convert_column_types(df)
+    assert converted["Invoice"].dtype == object
+    assert list(converted["Invoice"]) == ["536365", "536366", "536367", "C536379"]
+
+
+def test_convert_column_types_leaves_camel_case_id_column_as_text():
+    # "StockCode" has no separator between "Stock" and "Code" - the ID-name check must
+    # split camelCase, not just punctuation, to catch it.
+    df = pd.DataFrame({"StockCode": ["21654", "21703", "90123B", "85199S"]})
+    converted, report = convert_column_types(df)
+    assert converted["StockCode"].dtype == object
+
+
 def test_clean_data_converts_currency_and_boolean_columns():
     df = pd.DataFrame({
         "price": ["$10.50", "$20.00", None, "$15.25"],
