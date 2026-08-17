@@ -40,22 +40,22 @@ def combine_dataframes(named_dfs):
     (e.g. one file per month). Adds a 'source_file' column and uses an outer-join concat so
     files with slightly different columns don't error out - missing values become NaN.
     Returns (combined_df, summary) where summary reports per-file row counts and whether the
-    column sets matched across all files."""
+    column sets matched across all files. Mutates the input DataFrames in place (adds
+    'source_file' to each) rather than copying them first - concat already makes a full copy
+    of the combined result, so an extra defensive copy here just doubles peak memory on large
+    multi-file uploads for no benefit to the only caller, which discards the originals anyway."""
     if not named_dfs:
         raise ValueError("No files to combine")
 
     all_columns = [frozenset(df.columns) for _, df in named_dfs]
     columns_matched = len(set(all_columns)) == 1
 
-    parts = []
     file_row_counts = {}
     for name, df in named_dfs:
-        part = df.copy()
-        part['source_file'] = name
-        parts.append(part)
+        df['source_file'] = name
         file_row_counts[name] = len(df)
 
-    combined = pd.concat(parts, ignore_index=True, sort=False)
+    combined = pd.concat([df for _, df in named_dfs], ignore_index=True, sort=False)
 
     summary = {
         'files_combined': len(named_dfs),
