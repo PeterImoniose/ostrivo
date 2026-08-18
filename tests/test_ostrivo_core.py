@@ -22,6 +22,7 @@ from ostrivo_core import (
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
     convert_column_types, detect_and_convert_numeric_column, detect_and_convert_boolean_column,
+    detect_industry, is_rate_like_metric,
 )
 
 
@@ -916,3 +917,121 @@ def test_binary_outcome_risk_model_missing_feature_raises():
     df = pd.DataFrame({"outcome": ["yes", "no"] * 15, "feature": range(30)})
     with pytest.raises(ValueError):
         binary_outcome_risk_model(df, "outcome", ["nonexistent"])
+
+
+# ── is_rate_like_metric ──────────────────────────────────────────────────────
+
+def test_is_rate_like_metric_true_for_price_and_rate_names():
+    assert is_rate_like_metric("Fuel_Price") is True
+    assert is_rate_like_metric("Interest Rate") is True
+    assert is_rate_like_metric("CPI") is True
+    assert is_rate_like_metric("Unit Cost") is True
+
+
+def test_is_rate_like_metric_false_for_additive_names():
+    assert is_rate_like_metric("Revenue") is False
+    assert is_rate_like_metric("Weekly_Sales") is False
+    assert is_rate_like_metric("Units Sold") is False
+
+
+# ── top_performers_analysis / time_trend_analysis / industry_kpi_summary agg ──
+
+def test_top_performers_analysis_averages_rate_like_metric():
+    df = pd.DataFrame({
+        "store": ["A", "A", "B", "B"],
+        "fuel_price": [3.50, 3.70, 4.00, 4.20],
+    })
+    result = top_performers_analysis(df, "store", "fuel_price")
+    assert dict(zip(result["store"], result["total"])) == {"A": pytest.approx(3.60), "B": pytest.approx(4.10)}
+
+
+def test_top_performers_analysis_still_sums_additive_metric():
+    df = pd.DataFrame({
+        "store": ["A", "A", "B"],
+        "revenue": [100, 100, 50],
+    })
+    result = top_performers_analysis(df, "store", "revenue")
+    assert dict(zip(result["store"], result["total"])) == {"A": 200, "B": 50}
+
+
+def test_time_trend_analysis_averages_rate_like_metric():
+    df = pd.DataFrame({
+        "date": ["2026-01-01", "2026-01-01", "2026-01-02"],
+        "price": [10.0, 20.0, 40.0],
+    })
+    result = time_trend_analysis(df, "date", "price")
+    assert list(result["total"]) == [15.0, 40.0]
+
+
+def test_industry_kpi_summary_uses_overall_mean_for_rate_like_metric():
+    df = pd.DataFrame({
+        "store": ["A", "A", "B", "B", "B"],
+        "fuel_price": [3.50, 3.70, 4.00, 4.20, 4.40],
+    })
+    result = industry_kpi_summary(df, "store", "fuel_price")
+    assert result["agg"] == "mean"
+    assert result["total"] == pytest.approx(df["fuel_price"].mean(), abs=0.01)
+
+
+def test_industry_kpi_summary_agg_is_sum_for_additive_metric():
+    df = pd.DataFrame({
+        "department": ["ER", "ER", "Cardiology"],
+        "patients": [40, 10, 30],
+    })
+    result = industry_kpi_summary(df, "department", "patients")
+    assert result["agg"] == "sum"
+    assert result["total"] == 80.0
+
+
+# ── detect_industry ───────────────────────────────────────────────────────────
+
+def test_detect_industry_identifies_retail_data():
+    df = pd.DataFrame(columns=[
+        "Store", "Weekly_Sales", "Holiday_Flag", "Temperature", "Fuel_Price", "CPI", "Unemployment"
+    ])
+    industry, keywords = detect_industry(df)
+    assert industry == "sales_retail"
+    assert "sales" in keywords
+    assert "store" in keywords
+
+
+def test_detect_industry_identifies_healthcare_data():
+    df = pd.DataFrame(columns=[
+        "Patient Name", "Age", "Gender", "Blood Type", "Medical Condition",
+        "Date of Admission", "Doctor", "Hospital", "Insurance Provider",
+        "Billing Amount", "Admission Type", "Discharge Date", "Medication",
+    ])
+    industry, keywords = detect_industry(df)
+    assert industry == "healthcare"
+    assert "patient" in keywords
+
+
+def test_detect_industry_identifies_finance_data():
+    df = pd.DataFrame(columns=[
+        "Customer_ID", "Account_Number", "Account_Type", "Loan_Type", "Loan_Amount",
+        "Outstanding_Amount", "EMI_Amount", "Loan_Status", "Credit_Score",
+    ])
+    industry, keywords = detect_industry(df)
+    assert industry == "finance_banking"
+
+
+def test_detect_industry_identifies_manufacturing_data():
+    df = pd.DataFrame(columns=[
+        "Machine_ID", "Timestamp", "Temperature", "Vibration", "Pressure",
+        "Downtime_Risk_Score", "Failure_Type", "Maintenance_Required",
+    ])
+    industry, keywords = detect_industry(df)
+    assert industry == "engineering_manufacturing"
+
+
+def test_detect_industry_returns_none_for_ambiguous_columns():
+    df = pd.DataFrame(columns=["id", "name", "date", "value"])
+    industry, keywords = detect_industry(df)
+    assert industry is None
+    assert keywords == []
+
+
+def test_detect_industry_ignores_internal_columns():
+    df = pd.DataFrame(columns=["Store", "Weekly_Sales", "_anomaly", "_anomaly_score"])
+    industry, keywords = detect_industry(df)
+    assert industry == "sales_retail"

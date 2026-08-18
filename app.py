@@ -25,7 +25,7 @@ from ostrivo_core import (
     generate_pdf_report, generate_excel_report,
     is_excel_file, get_excel_sheet_names, load_excel_sheet, rank_excel_sheets,
     combine_dataframes,
-    INDUSTRY_OPTIONS, suggest_category_and_metric_columns,
+    INDUSTRY_OPTIONS, suggest_category_and_metric_columns, detect_industry,
     top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
@@ -1455,6 +1455,32 @@ else:
     # ── Data quality scores ──────────────────────────────────────────────────
     quality_scores = get_data_quality_scores(clean_report, anomaly_summary)
 
+    # ── Industry auto-detection ──────────────────────────────────────────────
+    # Industry is a sticky account/session setting reused for every file, so without this a
+    # retail test upload would silently get analysed with whatever template (e.g. Healthcare)
+    # was picked last. Detect once per fresh upload from the column names; guests (no
+    # persistent setting to protect) get it auto-applied, logged-in users just get a nudge
+    # so a one-off file doesn't overwrite their saved account preference.
+    detected_industry, detected_industry_keywords = detect_industry(df)
+    if detected_industry and st.session_state.get('industry_auto_applied_for') != upload_fingerprint:
+        st.session_state['industry_auto_applied_for'] = upload_fingerprint
+        keyword_note = ', '.join(detected_industry_keywords[:5])
+        if st.session_state.get('is_guest') or not supabase_client:
+            if st.session_state.get('guest_industry') != detected_industry:
+                st.session_state['guest_industry'] = detected_industry
+                st.info(
+                    f"📁 Detected **{INDUSTRY_OPTIONS[detected_industry]}** data (matched columns: "
+                    f"{keyword_note}) - Industry Insights is now tailored to it. Change this "
+                    "anytime under Industry Focus in the sidebar."
+                )
+        elif get_current_industry() != detected_industry:
+            st.info(
+                f"📁 This file looks like **{INDUSTRY_OPTIONS[detected_industry]}** data (matched "
+                f"columns: {keyword_note}), not your account's "
+                f"**{INDUSTRY_OPTIONS.get(get_current_industry(), 'Not set')}** setting. Industry "
+                "Insights will keep using your account setting unless you change it there."
+            )
+
 # ── KPI row ───────────────────────────────────────────────────────────────────
 st.markdown('<p class="section-title">Dataset Overview</p>', unsafe_allow_html=True)
 k1, k2, k3, k4, k5 = st.columns(5)
@@ -1559,7 +1585,10 @@ def draw_plotly_as_matplotlib(fig, ax):
             else:
                 ax.bar(x, y, color='#3b82f6')
                 ax.tick_params(axis='x', rotation=45)
-        elif ttype == 'scatter':
+        elif ttype in ('scatter', 'scattergl'):
+            # Plotly Express auto-upgrades scatter traces to WebGL ('scattergl') once a
+            # dataset has more than ~1,000 points, so a chart built from a large file used
+            # to render blank here even though the equivalent small-file chart worked fine.
             x = list(trace.x) if trace.x is not None else []
             y = list(trace.y) if trace.y is not None else []
             mode = trace.mode or ''
@@ -2097,8 +2126,10 @@ with tab5:
                                               format_func=lambda c: col_labels.get(c, c), key="tp_metric")
 
                 sales_kpi = industry_kpi_summary(df, tp_cat, tp_metric)
+                sales_kpi_label = "Average" if sales_kpi['agg'] == 'mean' else "Total"
+                sales_kpi_fmt = f"{sales_kpi['total']:,.2f}" if sales_kpi['agg'] == 'mean' else f"{sales_kpi['total']:,.0f}"
                 kq1, kq2, kq3, kq4 = st.columns(4)
-                kq1.metric(f"Total {col_labels.get(tp_metric, tp_metric)}", f"{sales_kpi['total']:,.0f}")
+                kq1.metric(f"{sales_kpi_label} {col_labels.get(tp_metric, tp_metric)}", sales_kpi_fmt)
                 kq2.metric("Top Performer", str(sales_kpi['top_category']))
                 kq3.metric("Top Share", f"{sales_kpi['top_category_share_pct']}%")
                 kq4.metric("Categories", sales_kpi['category_count'])
@@ -2207,9 +2238,11 @@ with tab5:
                                               format_func=lambda c: col_labels.get(c, c), key="cr_amount")
                 cr_result = concentration_risk_analysis(df, cr_cat, cr_amount)
                 finance_kpi = industry_kpi_summary(df, cr_cat, cr_amount)
+                finance_kpi_label = "Average" if finance_kpi['agg'] == 'mean' else "Total"
+                finance_kpi_fmt = f"{finance_kpi['total']:,.2f}" if finance_kpi['agg'] == 'mean' else f"{finance_kpi['total']:,.0f}"
                 risk_class = {'Low': 'insight-box', 'Moderate': 'warning-box', 'High': 'warning-box'}
                 cq1, cq2, cq3, cq4 = st.columns(4)
-                cq1.metric(f"Total {col_labels.get(cr_amount, cr_amount)}", f"{finance_kpi['total']:,.0f}")
+                cq1.metric(f"{finance_kpi_label} {col_labels.get(cr_amount, cr_amount)}", finance_kpi_fmt)
                 cq2.metric("Concentration Index (HHI)", cr_result['hhi'])
                 cq3.metric("Risk Level", cr_result['risk_level'])
                 cq4.metric("Holdings", finance_kpi['category_count'])
@@ -2384,8 +2417,10 @@ with tab5:
                                               format_func=lambda c: col_labels.get(c, c), key="hc_metric")
 
                 hc_kpi = industry_kpi_summary(df, hc_cat, hc_metric)
+                hc_kpi_label = "Average" if hc_kpi['agg'] == 'mean' else "Total"
+                hc_kpi_fmt = f"{hc_kpi['total']:,.2f}" if hc_kpi['agg'] == 'mean' else f"{hc_kpi['total']:,.0f}"
                 hq1, hq2, hq3, hq4 = st.columns(4)
-                hq1.metric(f"Total {col_labels.get(hc_metric, hc_metric)}", f"{hc_kpi['total']:,.0f}")
+                hq1.metric(f"{hc_kpi_label} {col_labels.get(hc_metric, hc_metric)}", hc_kpi_fmt)
                 hq2.metric("Busiest", str(hc_kpi['top_category']))
                 hq3.metric("Its Share", f"{hc_kpi['top_category_share_pct']}%")
                 hq4.metric("Departments", hc_kpi['category_count'])

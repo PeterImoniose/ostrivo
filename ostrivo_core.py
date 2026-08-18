@@ -679,6 +679,21 @@ _METRIC_NAME_HINTS_TIER1 = {'sales', 'revenue', 'amount', 'total', 'profit', 'sp
 _METRIC_NAME_HINTS_TIER2 = {'quantity', 'qty', 'units', 'volume', 'price', 'cost', 'value'}
 _ID_NAME_HINTS = {'id', 'number', 'no', 'code', 'invoice', 'sku', 'reference', 'ref'}
 
+_RATE_NAME_HINTS = {
+    'price', 'cost', 'rate', 'ratio', 'percent', 'percentage', 'score', 'index',
+    'avg', 'average', 'mean', 'age', 'temperature', 'cpi', 'apr', 'margin',
+}
+
+
+def is_rate_like_metric(col_name):
+    """True if a numeric column's name suggests it's a rate, price, or other per-unit
+    measure (fuel price, interest rate, CPI...) rather than an additive quantity (sales,
+    revenue, units). Summing a rate across rows produces a number with no real meaning -
+    e.g. summing a fuel price per gallon across 45 stores - so these should be averaged
+    per category/period instead. Used by the industry-analysis functions below to pick
+    sum vs. mean automatically from the column name."""
+    return bool(_RATE_NAME_HINTS & set(_name_tokens(col_name)))
+
 
 def _looks_like_identifier(series, col_name):
     """Heuristic: a numeric column is probably an identifier rather than a real measure
@@ -734,13 +749,86 @@ def suggest_category_and_metric_columns(df):
     return best_cat, best_num
 
 
+_INDUSTRY_KEYWORDS = {
+    'sales_retail': {
+        'strong': {'sales', 'revenue', 'customer', 'product', 'sku', 'order', 'cart',
+                   'discount', 'store', 'retail', 'purchase', 'checkout', 'promotion',
+                   'coupon', 'shipping', 'msrp', 'basket'},
+        'weak': {'price', 'quantity', 'units', 'qty', 'category', 'region'},
+    },
+    'finance_banking': {
+        'strong': {'loan', 'credit', 'debit', 'balance', 'account', 'interest', 'emi',
+                   'mortgage', 'portfolio', 'fraud', 'atm', 'deposit', 'withdrawal',
+                   'apr', 'principal', 'collateral', 'borrower', 'lender', 'dividend',
+                   'currency', 'equity'},
+        'weak': {'transaction', 'amount', 'bank', 'payment', 'risk'},
+    },
+    'engineering_manufacturing': {
+        'strong': {'machine', 'sensor', 'vibration', 'downtime', 'defect', 'yield',
+                   'batch', 'production', 'plant', 'equipment', 'maintenance', 'failure',
+                   'rpm', 'throughput', 'assembly', 'calibration', 'tolerance', 'scrap',
+                   'uptime', 'iot'},
+        'weak': {'temperature', 'pressure', 'line', 'cycle', 'unit'},
+    },
+    'healthcare': {
+        'strong': {'patient', 'diagnosis', 'admission', 'discharge', 'physician',
+                   'ward', 'treatment', 'medication', 'symptom', 'blood', 'hospital',
+                   'condition', 'dosage', 'prescription', 'readmission', 'triage', 'icd',
+                   'vital', 'nurse', 'doctor'},
+        'weak': {'department', 'insurance', 'billing', 'gender'},
+    },
+}
+
+
+def detect_industry(df):
+    """Guess which industry a dataset belongs to from its column names alone, so the app can
+    suggest (or for guests, auto-apply) a matching analysis template instead of always reusing
+    whatever industry was picked last - the bug that made a retail file get analysed with the
+    Healthcare template.
+
+    Scores each industry by the column-name keywords it finds: strong, industry-specific terms
+    (e.g. 'patient', 'loan', 'machine') score 3 points each, weak/generic terms that show up
+    across multiple industries (e.g. 'temperature', 'amount') score 1, so a couple of generic
+    overlaps can't outweigh one real domain-specific signal. Keyword lists are grounded in real
+    public dataset schemas (Kaggle healthcare/retail/manufacturing/finance datasets), not guesses.
+
+    Returns (industry_key, matched_keywords) when one industry is a clear, confident match, or
+    (None, []) when the dataset is too ambiguous or generic to decide automatically - it's then
+    left for the user to pick manually rather than risk a wrong auto-selection."""
+    tokens = set()
+    for col in df.columns:
+        if str(col).startswith('_'):
+            continue
+        tokens.update(_name_tokens(col))
+
+    scores = {}
+    matches = {}
+    for industry, kw in _INDUSTRY_KEYWORDS.items():
+        strong_hits = kw['strong'] & tokens
+        weak_hits = kw['weak'] & tokens
+        scores[industry] = len(strong_hits) * 3 + len(weak_hits)
+        matches[industry] = sorted(strong_hits | weak_hits)
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    top_industry, top_score = ranked[0]
+    runner_up_score = ranked[1][1] if len(ranked) > 1 else 0
+
+    if top_score >= 3 and top_score >= runner_up_score + 2:
+        return top_industry, matches[top_industry]
+    return None, []
+
+
 def top_performers_analysis(df, category_col, metric_col, top_n=10):
-    """Sales & Retail: rank a category (product, region, ...) by the total of a numeric metric
-    (revenue, units sold, ...). Returns a DataFrame [category_col, 'total', 'share_pct']."""
+    """Sales & Retail: rank a category (product, region, ...) by a numeric metric - summed for
+    additive metrics (revenue, units sold, ...) or averaged for rate-like metrics (price,
+    score, ...), decided from the column name via is_rate_like_metric(), so summing something
+    like a per-gallon fuel price across many rows doesn't produce a meaningless total. Returns
+    a DataFrame [category_col, 'total', 'share_pct']."""
     if category_col not in df.columns or metric_col not in df.columns:
         raise ValueError("category_col and metric_col must both exist in the DataFrame")
 
-    grouped = df.groupby(category_col)[metric_col].sum().reset_index()
+    agg_func = 'mean' if is_rate_like_metric(metric_col) else 'sum'
+    grouped = df.groupby(category_col)[metric_col].agg(agg_func).reset_index()
     grouped.columns = [category_col, 'total']
     grouped = grouped.sort_values('total', ascending=False)
 
@@ -818,9 +906,11 @@ def control_chart_analysis(df, metric_col, sequence_col=None):
 
 
 def time_trend_analysis(df, date_col, metric_col, freq='D'):
-    """Aggregate metric_col over time (summed per period) for a trend chart - reused across
-    every industry's Insights tab wherever a date column is available. freq follows pandas
-    offset aliases ('D' daily, 'W' weekly, 'M' monthly). Returns a DataFrame [period, total]."""
+    """Aggregate metric_col over time for a trend chart - summed per period for additive
+    metrics (revenue, units...) or averaged for rate-like metrics (price, score...), decided
+    from the column name via is_rate_like_metric(). Reused across every industry's Insights
+    tab wherever a date column is available. freq follows pandas offset aliases ('D' daily,
+    'W' weekly, 'M' monthly). Returns a DataFrame [period, total]."""
     if date_col not in df.columns or metric_col not in df.columns:
         raise ValueError("date_col and metric_col must both exist in the DataFrame")
 
@@ -828,37 +918,49 @@ def time_trend_analysis(df, date_col, metric_col, freq='D'):
     data[date_col] = pd.to_datetime(data[date_col], errors='coerce')
     data = data.dropna(subset=[date_col])
 
-    trend = data.set_index(date_col).resample(freq)[metric_col].sum().reset_index()
+    agg_func = 'mean' if is_rate_like_metric(metric_col) else 'sum'
+    trend = data.set_index(date_col).resample(freq)[metric_col].agg(agg_func).reset_index()
     trend.columns = ['period', 'total']
     return trend
 
 
 def industry_kpi_summary(df, category_col, metric_col):
-    """Headline KPIs for a category+metric industry view (total, category count, top
-    category and its share, average per category) - reused across every industry that ranks
-    a category by a numeric metric (Sales & Retail, Finance & Banking, Healthcare)."""
+    """Headline KPIs for a category+metric industry view (total, category count, top category
+    and its share, average per category) - reused across every industry that ranks a category
+    by a numeric metric (Sales & Retail, Finance & Banking, Healthcare).
+
+    The metric is summed for additive columns (revenue, units...) or averaged for rate-like
+    columns (price, score...), decided from the column name via is_rate_like_metric() - for a
+    rate-like column the headline 'total' is the overall column mean (the only number that's
+    actually meaningful for something like a price), not a sum of per-category averages. The
+    returned 'agg' key tells the caller which was used, so a UI can label the card 'Total X'
+    or 'Average X' correctly instead of always saying 'Total'."""
     if category_col not in df.columns or metric_col not in df.columns:
         raise ValueError("category_col and metric_col must both exist in the DataFrame")
 
-    grouped = df.groupby(category_col)[metric_col].sum().reset_index()
+    agg_func = 'mean' if is_rate_like_metric(metric_col) else 'sum'
+    grouped = df.groupby(category_col)[metric_col].agg(agg_func).reset_index()
     grouped.columns = [category_col, 'total']
-    total_sum = float(grouped['total'].sum())
+    grouped_sum = float(grouped['total'].sum())
     category_count = len(grouped)
+
+    headline_value = float(df[metric_col].mean()) if agg_func == 'mean' and len(df) else grouped_sum
 
     if category_count:
         top_row = grouped.sort_values('total', ascending=False).iloc[0]
         top_category = top_row[category_col]
-        top_category_share_pct = round(float(top_row['total']) / total_sum * 100, 1) if total_sum else 0.0
+        top_category_share_pct = round(float(top_row['total']) / grouped_sum * 100, 1) if grouped_sum else 0.0
     else:
         top_category = None
         top_category_share_pct = 0.0
 
     return {
-        'total': round(total_sum, 2),
+        'total': round(headline_value, 2),
         'category_count': category_count,
         'top_category': top_category,
         'top_category_share_pct': top_category_share_pct,
-        'avg_per_category': round(total_sum / category_count, 2) if category_count else 0.0,
+        'avg_per_category': round(grouped_sum / category_count, 2) if category_count else 0.0,
+        'agg': agg_func,
     }
 
 
