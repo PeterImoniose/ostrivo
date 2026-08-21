@@ -29,6 +29,7 @@ from ostrivo_core import (
     top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
+    is_rate_like_metric,
 )
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
@@ -1682,9 +1683,10 @@ def render_forecast_chart(df, date_col, metric_col, col_labels, chart_key, perio
 
 
 # ── Tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
     "🚀 Auto-Pilot", "📊 Dashboard", "🔍 Anomalies", "🧭 Advisor", "🏭 Industry Insights",
-    "📈 Forecast", "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data", "🎨 Dashboard Banner"
+    "📈 Forecast", "🤖 AI Summary", "💬 Ask Your Data", "📋 Raw Data", "🎨 Dashboard Banner",
+    "🛠️ Chart Builder"
 ])
 
 # ── Tab 1: Auto-Pilot ─────────────────────────────────────────────────────────
@@ -2822,6 +2824,158 @@ with tab10:
                     mime="image/png",
                     key="download_banner_btn"
                 )
+
+# ── Tab 11: Chart Builder ───────────────────────────────────────────────────────
+with tab11:
+    st.markdown('<p class="section-title">Chart Builder</p>', unsafe_allow_html=True)
+    st.caption("Pick your own columns, chart type, and aggregation - no auto-selection. "
+               "The chart you build here can also be added to the Dashboard Banner above.")
+
+    cb_all_cols = [c for c in df.columns if not str(c).startswith('_')]
+    cb_num_cols = [c for c in df.select_dtypes(include=[np.number]).columns if not c.startswith('_')]
+    cb_cat_cols = df.select_dtypes(include=['object', 'category', 'boolean', 'bool']).columns.tolist()
+    cb_date_col = detect_date_column(df)
+
+    CHART_BUILDER_TYPES = [
+        "Bar", "Line", "Area", "Scatter", "Histogram", "Box Plot", "Violin Plot",
+        "Pie Chart", "Correlation Heatmap",
+    ]
+    cb_chart_type = st.selectbox("Chart type", CHART_BUILDER_TYPES, key="cb_chart_type")
+
+    if cb_chart_type == "Correlation Heatmap":
+        cb_heatmap_cols = st.multiselect(
+            "Numeric columns to include", cb_num_cols,
+            default=cb_num_cols[:8],
+            format_func=lambda c: col_labels.get(c, c), key="cb_heatmap_cols"
+        )
+        if len(cb_heatmap_cols) < 2:
+            st.info("Pick at least 2 numeric columns to build a correlation heatmap.")
+        else:
+            cb_corr = df[cb_heatmap_cols].corr().round(2)
+            cb_corr = cb_corr.rename(columns=col_labels, index=col_labels)
+            fig_cb = px.imshow(
+                cb_corr, color_continuous_scale='RdBu_r', zmin=-1, zmax=1,
+                title="Correlation Heatmap", text_auto=True
+            )
+            fig_cb.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+            )
+            render_chart(fig_cb, "chart_builder_output")
+    else:
+        needs_y = cb_chart_type != "Histogram"
+        needs_agg = cb_chart_type in ("Bar", "Line", "Area", "Pie Chart")
+
+        cb_default_x = cb_cat_cols[0] if cb_cat_cols else (cb_date_col or cb_all_cols[0])
+
+        cbc1, cbc2, cbc3 = st.columns(3)
+        with cbc1:
+            cb_x = st.selectbox(
+                "X axis", cb_all_cols,
+                index=cb_all_cols.index(cb_default_x) if cb_default_x in cb_all_cols else 0,
+                format_func=lambda c: col_labels.get(c, c), key="cb_x"
+            )
+        with cbc2:
+            if needs_y:
+                cb_y_options = cb_num_cols if cb_num_cols else cb_all_cols
+                # Default Y to a different column than X where possible, since aggregating a
+                # column by itself (e.g. summing Store grouped by Store) isn't something a
+                # first-time user picking the defaults would want to see.
+                cb_default_y = next((c for c in cb_y_options if c != cb_x), cb_y_options[0])
+                cb_y = st.selectbox(
+                    "Y axis", cb_y_options,
+                    index=cb_y_options.index(cb_default_y),
+                    format_func=lambda c: col_labels.get(c, c), key="cb_y"
+                )
+            else:
+                cb_y = None
+                st.caption("Histogram only needs an X axis - it plots the distribution of that column.")
+        with cbc3:
+            cb_color_choice = st.selectbox(
+                "Color / group by (optional)", ["None"] + cb_cat_cols,
+                format_func=lambda c: "None" if c == "None" else col_labels.get(c, c), key="cb_color"
+            )
+            cb_color = None if cb_color_choice == "None" else cb_color_choice
+
+        cb_agg = "sum"
+        cb_top_n = None
+        cbc4, cbc5 = st.columns(2)
+        if needs_agg and cb_y:
+            with cbc4:
+                agg_choice = st.selectbox(
+                    "Aggregation", ["Auto (recommended)", "Sum", "Average", "Count", "Min", "Max", "Median"],
+                    key="cb_agg_choice"
+                )
+            agg_map = {"Sum": "sum", "Average": "mean", "Count": "count", "Min": "min", "Max": "max", "Median": "median"}
+            cb_agg = (
+                ("mean" if is_rate_like_metric(cb_y) else "sum")
+                if agg_choice == "Auto (recommended)" else agg_map[agg_choice]
+            )
+        if cb_chart_type in ("Bar", "Pie Chart"):
+            with cbc5:
+                if st.checkbox("Limit to top N categories", value=True, key="cb_limit_toggle"):
+                    cb_top_n = st.number_input("N", min_value=3, max_value=100, value=15, step=1, key="cb_top_n")
+
+        cb_custom_title = st.text_input("Custom title (optional)", key="cb_custom_title")
+
+        x_label = col_labels.get(cb_x, cb_x)
+        y_label = col_labels.get(cb_y, cb_y) if cb_y else None
+        default_title = f"{y_label} by {x_label}" if cb_y else f"Distribution of {x_label}"
+        chart_title = cb_custom_title or default_title
+
+        fig_cb = None
+        try:
+            if cb_chart_type == "Scatter":
+                fig_cb = px.scatter(df, x=cb_x, y=cb_y, color=cb_color, opacity=0.7,
+                                     title=chart_title, labels=col_labels)
+            elif cb_chart_type == "Histogram":
+                fig_cb = px.histogram(df, x=cb_x, color=cb_color, title=chart_title, labels=col_labels)
+            elif cb_chart_type in ("Box Plot", "Violin Plot"):
+                plot_fn = px.box if cb_chart_type == "Box Plot" else px.violin
+                fig_cb = plot_fn(df, x=cb_x, y=cb_y, color=cb_color, title=chart_title, labels=col_labels)
+            elif cb_x == cb_y:
+                # Grouping a column by itself (e.g. summing Store grouped by Store) has no
+                # sensible aggregate value and pandas can't even reset_index() it (the group
+                # key and the aggregated column would collide) - so ask for two columns
+                # instead of trying to aggregate something meaningless.
+                st.info(
+                    f"X axis and Y axis are both **{x_label}** - pick two different columns for a "
+                    f"{cb_chart_type} chart, or switch to Histogram to see one column's distribution."
+                )
+            else:
+                # Bar, Line, Area, Pie Chart all aggregate y per x (and per color, if grouping)
+                group_cols = [cb_x] + ([cb_color] if cb_color and cb_color != cb_x else [])
+                cb_agg_df = df.groupby(group_cols)[cb_y].agg(cb_agg).reset_index()
+                if cb_top_n:
+                    cb_top_x_values = (
+                        cb_agg_df.groupby(cb_x)[cb_y].sum().sort_values(ascending=False).head(cb_top_n).index
+                    )
+                    cb_agg_df = cb_agg_df[cb_agg_df[cb_x].isin(cb_top_x_values)]
+                if cb_chart_type in ("Line", "Area") and cb_x == cb_date_col:
+                    cb_agg_df = cb_agg_df.sort_values(cb_x)
+
+                if cb_chart_type == "Bar":
+                    fig_cb = px.bar(cb_agg_df, x=cb_x, y=cb_y, color=cb_color, title=chart_title,
+                                     labels=col_labels, barmode='group')
+                elif cb_chart_type == "Line":
+                    fig_cb = px.line(cb_agg_df, x=cb_x, y=cb_y, color=cb_color, markers=True,
+                                      title=chart_title, labels=col_labels)
+                elif cb_chart_type == "Area":
+                    fig_cb = px.area(cb_agg_df, x=cb_x, y=cb_y, color=cb_color, title=chart_title, labels=col_labels)
+                elif cb_chart_type == "Pie Chart":
+                    fig_cb = px.pie(cb_agg_df, names=cb_x, values=cb_y, hole=0.45, title=chart_title,
+                                     color_discrete_sequence=px.colors.qualitative.Set2)
+
+            if fig_cb is not None:
+                fig_cb.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
+                    font=dict(family='Inter', color='#94a3b8'), title_font=dict(size=14, color='#64748b')
+                )
+                render_chart(fig_cb, "chart_builder_output")
+                if needs_agg and cb_y:
+                    st.caption(f"Aggregation: **{cb_agg}** - change it above if that's not what you meant.")
+        except Exception as e:
+            st.error(f"Couldn't build that chart with these columns: {e}")
 
 # ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown("""
