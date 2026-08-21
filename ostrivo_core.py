@@ -35,6 +35,47 @@ def json_safe(obj):
     return obj
 
 
+CHART_SAMPLE_MAX_POINTS = 5000
+
+
+def sample_for_chart(df, max_points=CHART_SAMPLE_MAX_POINTS, random_state=42):
+    """Down-sample a DataFrame for a raw, point-per-row chart (scatter, histogram, box,
+    violin) - plotting every one of 500K+ rows individually is slow to build server-side,
+    slow to transfer to the browser as JSON, and visually indistinguishable from a sample of
+    a few thousand once you're past a certain point. Only affects chart rendering: cleaning,
+    anomaly detection, stats, and exports (Excel/PDF/CSV) still always use the full dataset -
+    this never drops data from the actual analysis, only from what gets drawn on screen.
+
+    Returns (display_df, was_sampled) - was_sampled lets the caller show a caption noting the
+    chart is a sample when it actually is one. Uses a fixed random_state so the same file
+    produces the same sampled chart across reruns rather than jittering on every widget
+    interaction. Aggregated chart types (bar/line/area/pie, which group by category or date
+    before plotting) don't need this - their point count is already bounded by the number of
+    distinct categories, not by row count."""
+    if len(df) <= max_points:
+        return df, False
+    return df.sample(n=max_points, random_state=random_state), True
+
+
+def sample_for_chart_preserving_flag(df, flag_col, max_points=CHART_SAMPLE_MAX_POINTS, random_state=42):
+    """Like sample_for_chart(), but for a chart whose whole point is highlighting a rare
+    flagged subset (e.g. an anomaly scatter) - a plain random sample could easily drop most
+    or all of the flagged rows if they're a small fraction of the data. Keeps every row where
+    flag_col is truthy, and randomly samples the remainder down to fill out max_points."""
+    if len(df) <= max_points or flag_col not in df.columns:
+        return df, False
+
+    flagged = df[df[flag_col].astype(bool)]
+    unflagged = df[~df[flag_col].astype(bool)]
+
+    remaining_budget = max(max_points - len(flagged), 0)
+    if len(unflagged) > remaining_budget:
+        unflagged = unflagged.sample(n=remaining_budget, random_state=random_state)
+
+    sampled = pd.concat([flagged, unflagged])
+    return sampled, True
+
+
 def combine_dataframes(named_dfs):
     """Combine multiple (filename, DataFrame) pairs into one DataFrame for analysing together
     (e.g. one file per month). Adds a 'source_file' column and uses an outer-join concat so

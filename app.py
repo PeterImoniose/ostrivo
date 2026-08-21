@@ -29,7 +29,7 @@ from ostrivo_core import (
     top_performers_analysis, concentration_risk_analysis, control_chart_analysis,
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
-    is_rate_like_metric,
+    is_rate_like_metric, sample_for_chart, sample_for_chart_preserving_flag,
 )
 from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
@@ -1806,10 +1806,17 @@ with tab2:
             format_func=lambda c: col_labels.get(c, c)
         )
 
+        dist_sample_df, dist_was_sampled = sample_for_chart(df)
+        if dist_was_sampled:
+            st.caption(
+                f"Charts below use a random sample of {len(dist_sample_df):,} of {len(df):,} rows "
+                "for speed - the full dataset is still used for cleaning, anomaly detection, and exports."
+            )
+
         col_a, col_b = st.columns(2)
         with col_a:
             fig = px.histogram(
-                df, x=col_select, nbins=40,
+                dist_sample_df, x=col_select, nbins=40,
                 title=f"Distribution of {col_labels.get(col_select, col_select)}",
                 labels=col_labels,
                 color_discrete_sequence=["#0284c7"]
@@ -1827,7 +1834,7 @@ with tab2:
             dist_chart_type = st.selectbox("Chart type", ["Box Plot", "Violin Plot"], key="dist_chart_type")
             if dist_chart_type == "Box Plot":
                 fig2 = px.box(
-                    df, y=col_select,
+                    dist_sample_df, y=col_select,
                     title=f"Box Plot - {col_labels.get(col_select, col_select)}",
                     labels=col_labels,
                     color_discrete_sequence=["#0f4c81"]
@@ -1835,7 +1842,7 @@ with tab2:
                 dist_chart_key = "chart_boxplot"
             else:
                 fig2 = px.violin(
-                    df, y=col_select, box=True, points=False,
+                    dist_sample_df, y=col_select, box=True, points=False,
                     title=f"Violin Plot - {col_labels.get(col_select, col_select)}",
                     labels=col_labels,
                     color_discrete_sequence=["#0f4c81"]
@@ -1913,8 +1920,14 @@ with tab2:
             if cat_cols:
                 color_col = cat_cols[0] if df[cat_cols[0]].nunique() <= 10 else None
 
+            scatter_sample_df, scatter_was_sampled = sample_for_chart(df)
+            if scatter_was_sampled:
+                st.caption(
+                    f"Showing a random sample of {len(scatter_sample_df):,} of {len(df):,} rows for speed."
+                )
+
             fig4 = px.scatter(
-                df, x=x_col, y=y_col,
+                scatter_sample_df, x=x_col, y=y_col,
                 color=color_col,
                 size=None if size_col == "None" else size_col,
                 title=f"{col_labels.get(x_col, x_col)} vs {col_labels.get(y_col, y_col)}",
@@ -2010,9 +2023,16 @@ with tab3:
                                   index=min(1, len(num_cols_clean)-1),
                                   format_func=lambda c: col_labels.get(c, c))
 
+            anomaly_sample_df, anomaly_was_sampled = sample_for_chart_preserving_flag(df, '_anomaly')
+            if anomaly_was_sampled:
+                st.caption(
+                    f"Showing all {anom_count:,} anomalous rows plus a random sample of the rest "
+                    f"({len(anomaly_sample_df):,} of {len(df):,} rows total) for speed."
+                )
+
             anomaly_scatter_labels = {**col_labels, '_anomaly': 'Anomaly'}
             fig_a = px.scatter(
-                df, x=col_x, y=col_y,
+                anomaly_sample_df, x=col_x, y=col_y,
                 color='_anomaly',
                 color_discrete_map={True: '#dc2626', False: '#0284c7'},
                 title="Anomalous vs Normal rows",
@@ -2925,14 +2945,20 @@ with tab11:
 
         fig_cb = None
         try:
+            if cb_chart_type in ("Scatter", "Histogram", "Box Plot", "Violin Plot"):
+                cb_sample_df, cb_was_sampled = sample_for_chart(df)
+                if cb_was_sampled:
+                    st.caption(
+                        f"Using a random sample of {len(cb_sample_df):,} of {len(df):,} rows for speed."
+                    )
             if cb_chart_type == "Scatter":
-                fig_cb = px.scatter(df, x=cb_x, y=cb_y, color=cb_color, opacity=0.7,
+                fig_cb = px.scatter(cb_sample_df, x=cb_x, y=cb_y, color=cb_color, opacity=0.7,
                                      title=chart_title, labels=col_labels)
             elif cb_chart_type == "Histogram":
-                fig_cb = px.histogram(df, x=cb_x, color=cb_color, title=chart_title, labels=col_labels)
+                fig_cb = px.histogram(cb_sample_df, x=cb_x, color=cb_color, title=chart_title, labels=col_labels)
             elif cb_chart_type in ("Box Plot", "Violin Plot"):
                 plot_fn = px.box if cb_chart_type == "Box Plot" else px.violin
-                fig_cb = plot_fn(df, x=cb_x, y=cb_y, color=cb_color, title=chart_title, labels=col_labels)
+                fig_cb = plot_fn(cb_sample_df, x=cb_x, y=cb_y, color=cb_color, title=chart_title, labels=col_labels)
             elif cb_x == cb_y:
                 # Grouping a column by itself (e.g. summing Store grouped by Store) has no
                 # sensible aggregate value and pandas can't even reset_index() it (the group

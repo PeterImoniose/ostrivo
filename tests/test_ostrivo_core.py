@@ -22,7 +22,7 @@ from ostrivo_core import (
     validate_password_strength, time_trend_analysis, industry_kpi_summary,
     segment_categories, estimate_time_to_limit, binary_outcome_risk_model,
     convert_column_types, detect_and_convert_numeric_column, detect_and_convert_boolean_column,
-    detect_industry, is_rate_like_metric,
+    detect_industry, is_rate_like_metric, sample_for_chart, sample_for_chart_preserving_flag,
 )
 
 
@@ -917,6 +917,54 @@ def test_binary_outcome_risk_model_missing_feature_raises():
     df = pd.DataFrame({"outcome": ["yes", "no"] * 15, "feature": range(30)})
     with pytest.raises(ValueError):
         binary_outcome_risk_model(df, "outcome", ["nonexistent"])
+
+
+# ── sample_for_chart / sample_for_chart_preserving_flag ──────────────────────
+
+def test_sample_for_chart_no_op_when_under_limit():
+    df = pd.DataFrame({"x": range(100)})
+    result, was_sampled = sample_for_chart(df, max_points=5000)
+    assert was_sampled is False
+    assert len(result) == 100
+
+
+def test_sample_for_chart_samples_when_over_limit():
+    df = pd.DataFrame({"x": range(10000)})
+    result, was_sampled = sample_for_chart(df, max_points=2000)
+    assert was_sampled is True
+    assert len(result) == 2000
+
+
+def test_sample_for_chart_deterministic_across_calls():
+    df = pd.DataFrame({"x": range(10000)})
+    result1, _ = sample_for_chart(df, max_points=500)
+    result2, _ = sample_for_chart(df, max_points=500)
+    assert list(result1["x"]) == list(result2["x"])
+
+
+def test_sample_for_chart_preserving_flag_no_op_when_under_limit():
+    df = pd.DataFrame({"x": range(100), "_anomaly": [False] * 95 + [True] * 5})
+    result, was_sampled = sample_for_chart_preserving_flag(df, "_anomaly", max_points=5000)
+    assert was_sampled is False
+    assert len(result) == 100
+
+
+def test_sample_for_chart_preserving_flag_keeps_all_flagged_rows():
+    df = pd.DataFrame({
+        "x": range(10000),
+        "_anomaly": [i % 500 == 0 for i in range(10000)],  # 20 flagged rows
+    })
+    result, was_sampled = sample_for_chart_preserving_flag(df, "_anomaly", max_points=2000)
+    assert was_sampled is True
+    assert result["_anomaly"].sum() == 20
+    assert len(result) == 2000
+
+
+def test_sample_for_chart_preserving_flag_missing_column_returns_unchanged():
+    df = pd.DataFrame({"x": range(10000)})
+    result, was_sampled = sample_for_chart_preserving_flag(df, "_anomaly", max_points=2000)
+    assert was_sampled is False
+    assert len(result) == 10000
 
 
 # ── is_rate_like_metric ──────────────────────────────────────────────────────
