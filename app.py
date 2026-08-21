@@ -1026,41 +1026,42 @@ if supabase_client:
         if 'pending_signup_email' in st.session_state:
             render_verify_screen(st.session_state['pending_signup_email'])
 
+        st.session_state.setdefault('auth_view', 'login')
+
         if app_base_url:
             # Cheap, network-free call (it only builds a URL string locally) - safe to run on
             # every render of this logged-out page so the button's link is always fresh.
             google_url, google_verifier = sign_in_with_google(supabase_client, app_base_url)
             st.session_state['google_oauth_verifier'] = google_verifier
+            # st.link_button has no built-in style variant for "this is the primary action" -
+            # this targets its rendered <a> directly so it reads as Google's own brand color
+            # rather than blending in with the plain secondary buttons below it.
+            st.markdown("""
+            <style>
+            div[data-testid="stLinkButton"] a {
+                background-color: #4285F4 !important;
+                border-color: #4285F4 !important;
+                color: #fff !important;
+                font-weight: 600;
+                font-size: 1.05rem;
+                padding-top: 0.6rem;
+                padding-bottom: 0.6rem;
+            }
+            div[data-testid="stLinkButton"] a:hover {
+                background-color: #3367D6 !important;
+                border-color: #3367D6 !important;
+                color: #fff !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
             st.link_button("🔵 Continue with Google", google_url, use_container_width=True)
             st.markdown(
-                '<p style="text-align:center;color:#94a3b8;margin:8px 0;">── or ──</p>',
+                '<p style="text-align:center;color:#94a3b8;margin:14px 0;">── or ──</p>',
                 unsafe_allow_html=True
             )
 
-        login_tab, signup_tab, guest_tab = st.tabs(["🔑 Log In", "✨ Sign Up", "🚀 Try as Guest"])
-
-        with login_tab:
-            with st.form("login_form"):
-                login_email = st.text_input("Email", key="login_email")
-                login_password = st.text_input("Password", type="password", key="login_password")
-                login_submitted = st.form_submit_button("Log In")
-            if login_submitted:
-                try:
-                    result = sign_in(supabase_client, login_email, login_password)
-                    st.session_state['auth_user'] = result.user
-                    st.session_state['sb_access_token'] = result.session.access_token
-                    st.session_state['sb_refresh_token'] = result.session.refresh_token
-                    cookie_controller.set('ostrivo_access_token', result.session.access_token)
-                    cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
-                    # The cookie component needs a render cycle to flush the write to the
-                    # browser before we tear down the DOM with rerun() - an immediate rerun
-                    # can cut it off, so give it a brief moment first.
-                    time.sleep(0.5)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Login failed: {e}")
-
-        with signup_tab:
+        if st.session_state['auth_view'] == 'signup':
+            st.markdown('<p class="section-title">Sign Up</p>', unsafe_allow_html=True)
             with st.form("signup_form"):
                 signup_name = st.text_input("Full Name", key="signup_name")
                 signup_email = st.text_input("Email", key="signup_email")
@@ -1094,21 +1095,50 @@ if supabase_client:
                     except Exception as e:
                         st.error(f"Sign up failed: {e}")
 
-        with guest_tab:
-            remaining = GUEST_ANALYSIS_LIMIT - guest_uses
-            if remaining > 0:
-                st.write(
-                    f"Try Ostrivo with your own data, no account needed - "
-                    f"**{remaining} free {'analysis' if remaining == 1 else 'analyses'}** on this browser."
-                )
-                st.caption("Nothing you upload in guest mode is saved anywhere - there's no account "
-                           "to save it to, so it's gone the moment you close the tab.")
-                if st.button("🚀 Start as Guest", key="guest_start_btn"):
-                    st.session_state['is_guest'] = True
+            st.caption("Already have an account?")
+            if st.button("Log in", key="switch_to_login_btn"):
+                st.session_state['auth_view'] = 'login'
+                st.rerun()
+        else:
+            st.markdown('<p class="section-title">Log In</p>', unsafe_allow_html=True)
+            with st.form("login_form"):
+                login_email = st.text_input("Email", key="login_email")
+                login_password = st.text_input("Password", type="password", key="login_password")
+                login_submitted = st.form_submit_button("Log In")
+            if login_submitted:
+                try:
+                    result = sign_in(supabase_client, login_email, login_password)
+                    st.session_state['auth_user'] = result.user
+                    st.session_state['sb_access_token'] = result.session.access_token
+                    st.session_state['sb_refresh_token'] = result.session.refresh_token
+                    cookie_controller.set('ostrivo_access_token', result.session.access_token)
+                    cookie_controller.set('ostrivo_refresh_token', result.session.refresh_token)
+                    # The cookie component needs a render cycle to flush the write to the
+                    # browser before we tear down the DOM with rerun() - an immediate rerun
+                    # can cut it off, so give it a brief moment first.
+                    time.sleep(0.5)
                     st.rerun()
-            else:
-                st.write("You've used all your free guest analyses on this browser.")
-                st.caption("Log in or sign up above to keep going - it's free.")
+                except Exception as e:
+                    st.error(f"Login failed: {e}")
+
+            st.caption("Don't have an account?")
+            if st.button("Create one", key="switch_to_signup_btn"):
+                st.session_state['auth_view'] = 'signup'
+                st.rerun()
+
+        st.divider()
+        remaining = GUEST_ANALYSIS_LIMIT - guest_uses
+        if remaining > 0:
+            st.caption(
+                f"Or skip all that and try it with your own data first - "
+                f"**{remaining} free {'analysis' if remaining == 1 else 'analyses'}** on this browser, "
+                "nothing saved, no account needed."
+            )
+            if st.button("🚀 Continue as Guest", key="guest_start_btn"):
+                st.session_state['is_guest'] = True
+                st.rerun()
+        else:
+            st.caption("You've used all your free guest analyses on this browser. Log in or sign up above to keep going.")
 
         st.stop()
 
