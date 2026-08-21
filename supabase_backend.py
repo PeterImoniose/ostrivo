@@ -56,6 +56,36 @@ def sign_in(client, email, password):
     return client.auth.sign_in_with_password({"email": email, "password": password})
 
 
+def sign_in_with_google(client, redirect_to):
+    """Start Google sign-in via Supabase's PKCE OAuth flow. Returns (url, code_verifier):
+    `url` is where to send the user's browser (Google's consent screen, via Supabase's own
+    /authorize redirect) - the caller renders this as a link/button, since Streamlit can't
+    perform a true server-side HTTP redirect mid-script. `code_verifier` must be stashed by
+    the caller (in st.session_state) until the callback comes back, because a brand new
+    Supabase client is created on every Streamlit rerun - the verifier the SDK generates
+    internally lives only in that throwaway client's in-memory storage and would otherwise
+    be lost the instant this script run ends. Reads that generated value straight back out
+    of the client's internal auth storage immediately after generating it (the public API
+    doesn't expose it any other way in supabase-py 2.x) - if a future SDK upgrade changes
+    that internal storage key, this will start returning None and needs revisiting."""
+    response = client.auth.sign_in_with_oauth({
+        "provider": "google",
+        "options": {"redirect_to": redirect_to},
+    })
+    code_verifier = client.auth._storage.get_item(f"{client.auth._storage_key}-code-verifier")
+    return response.url, code_verifier
+
+
+def complete_google_sign_in(client, auth_code, code_verifier):
+    """Finish the PKCE flow started by sign_in_with_google(): exchange the ?code=... query
+    param Supabase appended to the redirect URL, plus the code_verifier stashed at the start,
+    for an active session."""
+    return client.auth.exchange_code_for_session({
+        "auth_code": auth_code,
+        "code_verifier": code_verifier,
+    })
+
+
 def update_industry(client, industry):
     """Update the logged-in user's industry preference in their account metadata."""
     return client.auth.update_user({"data": {"industry": industry}})

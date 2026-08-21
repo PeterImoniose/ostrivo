@@ -35,6 +35,7 @@ from supabase_backend import (
     get_supabase_client, sign_up, sign_in, sign_out, restore_session,
     save_analysis, list_saved_analyses, load_analysis, delete_analysis,
     update_industry, verify_signup_code, resend_signup_code, delete_own_account,
+    sign_in_with_google, complete_google_sign_in,
 )
 from streamlit_cookies_controller import CookieController
 warnings.filterwarnings('ignore')
@@ -954,6 +955,10 @@ supabase_client = get_supabase_client(
     st.secrets.get("SUPABASE_ANON_KEY") if hasattr(st, "secrets") else None,
 )
 cookie_controller = CookieController() if supabase_client else None
+# The base URL Supabase sends the browser back to once Google sign-in finishes - also
+# doubles as the flag for whether the "Continue with Google" button is shown at all, so it
+# doesn't appear (and 404 on click) before this is set in Streamlit Cloud's secrets.
+app_base_url = st.secrets.get("APP_URL") if hasattr(st, "secrets") else None
 
 if supabase_client:
     # A fresh, unauthenticated Client object is created above on every single script
@@ -981,6 +986,32 @@ if supabase_client:
             cookie_controller.remove('ostrivo_access_token')
             cookie_controller.remove('ostrivo_refresh_token')
 
+    # Google sign-in callback: Supabase redirects back here with ?code=... once the user
+    # approves on Google's side. The matching code_verifier only exists in st.session_state
+    # (stashed when "Continue with Google" was rendered) - if it's missing, the browser
+    # session likely didn't survive the round trip to Google and back, so ask for a retry
+    # rather than silently failing or trying to work around PKCE's security model.
+    oauth_code = st.query_params.get("code")
+    if oauth_code and 'auth_user' not in st.session_state:
+        oauth_verifier = st.session_state.get('google_oauth_verifier')
+        try:
+            if not oauth_verifier:
+                raise ValueError("Sign-in session expired - please try again.")
+            oauth_result = complete_google_sign_in(supabase_client, oauth_code, oauth_verifier)
+            st.session_state['auth_user'] = oauth_result.user
+            st.session_state['sb_access_token'] = oauth_result.session.access_token
+            st.session_state['sb_refresh_token'] = oauth_result.session.refresh_token
+            cookie_controller.set('ostrivo_access_token', oauth_result.session.access_token)
+            cookie_controller.set('ostrivo_refresh_token', oauth_result.session.refresh_token)
+            st.session_state.pop('google_oauth_verifier', None)
+            del st.query_params["code"]
+            time.sleep(0.5)  # let the cookie write flush before the rerun tears down the DOM
+            st.rerun()
+        except Exception as e:
+            st.session_state.pop('google_oauth_verifier', None)
+            del st.query_params["code"]
+            st.error(f"Google sign-in failed: {e}. Please try 'Continue with Google' again.")
+
     guest_uses = get_guest_uses()
     guest_active = st.session_state.get('is_guest') and guest_uses < GUEST_ANALYSIS_LIMIT
 
@@ -994,6 +1025,17 @@ if supabase_client:
 
         if 'pending_signup_email' in st.session_state:
             render_verify_screen(st.session_state['pending_signup_email'])
+
+        if app_base_url:
+            # Cheap, network-free call (it only builds a URL string locally) - safe to run on
+            # every render of this logged-out page so the button's link is always fresh.
+            google_url, google_verifier = sign_in_with_google(supabase_client, app_base_url)
+            st.session_state['google_oauth_verifier'] = google_verifier
+            st.link_button("🔵 Continue with Google", google_url, use_container_width=True)
+            st.markdown(
+                '<p style="text-align:center;color:#94a3b8;margin:8px 0;">── or ──</p>',
+                unsafe_allow_html=True
+            )
 
         login_tab, signup_tab, guest_tab = st.tabs(["🔑 Log In", "✨ Sign Up", "🚀 Try as Guest"])
 
